@@ -2287,6 +2287,20 @@ static int _qce_unlock_other_pipes(struct qce_device *pce_dev, int req_info)
 	return rc;
 }
 
+static int qce_sps_set_irqs(struct qce_device *pce_dev, bool enable)
+{
+	if (enable)
+		return sps_bam_enable_irqs(pce_dev->ce_bam_info.bam_handle);
+	else
+		return sps_bam_disable_irqs(pce_dev->ce_bam_info.bam_handle);
+}
+
+int qce_set_irqs(void *handle, bool enable)
+{
+	return qce_sps_set_irqs(handle, enable);
+}
+EXPORT_SYMBOL(qce_set_irqs);
+
 static inline void qce_free_req_info(struct qce_device *pce_dev, int req_info,
 		bool is_complete);
 
@@ -3502,7 +3516,7 @@ static void _sps_producer_callback(struct sps_event_notify *notify)
 		preq_info->xfer_type == QCE_XFER_AEAD) &&
 			pce_sps_data->producer_state == QCE_PIPE_STATE_IDLE) {
 		pce_sps_data->producer_state = QCE_PIPE_STATE_COMP;
-		if (!is_offload_op(op)) {
+		if (!is_offload_op(op) && (op < QCE_OFFLOAD_OPER_LAST)) {
 			pce_sps_data->out_transfer.iovec_count = 0;
 			_qce_sps_add_data(GET_PHYS_ADDR(
 					pce_sps_data->result_dump),
@@ -5304,6 +5318,8 @@ static int _qce_resume(void *handle)
 	struct sps_pipe *sps_pipe_info;
 	struct sps_connect *sps_connect_info;
 	int rc, i;
+
+        rc = -ENODEV;
 
 	if (handle == NULL)
 		return -ENODEV;
