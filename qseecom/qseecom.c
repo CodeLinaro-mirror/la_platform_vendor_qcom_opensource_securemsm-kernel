@@ -120,7 +120,7 @@
 
 #define K_COPY_FROM_USER(err, dst, src, size) \
 	do {\
-		if (!(CONFIG_COMPAT))\
+		if (!(CONFIG_COMPAT) || CONFIG_QTI_QUIN_GVM)\
 			err = copy_from_user((dst),\
 			(void const __user *)(src),\
 			(size));\
@@ -130,7 +130,7 @@
 
 #define K_COPY_TO_USER(err, dst, src, size) \
 	do {\
-		if(!(CONFIG_COMPAT))\
+		if(!(CONFIG_COMPAT) || CONFIG_QTI_QUIN_GVM)\
 			err = copy_to_user((void __user *)(dst),\
 			(src), (size));\
 		else\
