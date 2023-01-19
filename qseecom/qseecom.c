@@ -3,7 +3,7 @@
  * QTI Secure Execution Environment Communicator (QSEECOM) driver
  *
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022,2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QSEECOM: %s: " fmt, __func__
@@ -106,6 +106,9 @@
 #define QSEECOM_STATE_READY             2
 #define QSEECOM_ICE_FDE_KEY_SIZE_MASK   2
 
+#define __user_ok(addr, size)	(((size) <= TASK_SIZE)			\
+				&& ((addr) <= TASK_SIZE - (size)))
+
 /*
  * default ce info unit to 0 for
  * services which
@@ -120,7 +123,7 @@
 
 #define K_COPY_FROM_USER(err, dst, src, size) \
 	do {\
-		if (!(CONFIG_COMPAT) || CONFIG_QTI_QUIN_GVM)\
+		if (__user_ok((unsigned long)src,size))\
 			err = copy_from_user((dst),\
 			(void const __user *)(src),\
 			(size));\
@@ -130,7 +133,7 @@
 
 #define K_COPY_TO_USER(err, dst, src, size) \
 	do {\
-		if(!(CONFIG_COMPAT) || CONFIG_QTI_QUIN_GVM)\
+		if (__user_ok((unsigned long)dst,size))\
 			err = copy_to_user((void __user *)(dst),\
 			(src), (size));\
 		else\
