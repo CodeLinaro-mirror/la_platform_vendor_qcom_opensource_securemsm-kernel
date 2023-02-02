@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <linux/fdtable.h>
 #include <linux/anon_inodes.h>
+#include <linux/delay.h>
 #include <linux/kref.h>
 #include <linux/types.h>
 #include <linux/slab.h>
@@ -15,12 +16,15 @@
 #include "smcinvoke.h"
 #include "smcinvoke_object.h"
 #include "IClientEnv.h"
-
 #if !IS_ENABLED(CONFIG_QSEECOM)
-#include "linux/qseecom.h"
-#include "misc/qseecom_kernel.h"
 #include "IQSEEComCompat.h"
 #include "IQSEEComCompatAppLoader.h"
+#include "linux/qseecom.h"
+#if IS_ENABLED(CONFIG_QSEECOM_PROXY)
+#include <linux/qseecom_kernel.h>
+#else
+#include "misc/qseecom_kernel.h"
+#endif
 #endif
 
 const uint32_t CQSEEComCompatAppLoader_UID = 122;
@@ -250,7 +254,14 @@ static int invoke_over_smcinvoke(void *cxt,
 				close_fd(obj.fd);
 			}
 		}
-		ret = OBJECT_ERROR_KMEM;
+		if (ret == -EBUSY) {
+			ret = OBJECT_ERROR_BUSY;
+		}
+		else if (ret == -ENOMEM){
+			ret = OBJECT_ERROR_KMEM;
+		} else {
+			ret = OBJECT_ERROR_UNAVAIL;
+		}
 		goto exit;
 	}
 
@@ -285,6 +296,7 @@ static int get_root_obj(struct Object *rootObj)
 int32_t get_client_env_object(struct Object *clientEnvObj)
 {
 	int32_t  ret = OBJECT_ERROR;
+	int retry_count = 0;
 	struct Object rootObj = Object_NULL;
 
 	/* get rootObj */
@@ -295,8 +307,15 @@ int32_t get_client_env_object(struct Object *clientEnvObj)
 	}
 
 	/* get client env */
-	ret = IClientEnv_registerWithCredentials(rootObj,
+	do {
+		ret = IClientEnv_registerWithCredentials(rootObj,
 			Object_NULL, clientEnvObj);
+		if (ret == OBJECT_ERROR_BUSY) {
+			pr_err("Secure side is busy,will retry after 5 ms, retry_count = %d",retry_count);
+			msleep(5);
+		}
+	} while ((ret == OBJECT_ERROR_BUSY) && (retry_count++ < SMCINVOKE_INTERFACE_MAX_RETRY));
+
 	if (ret)
 		pr_err("Failed to get ClientEnvObject, ret = %d\n", ret);
 	Object_release(rootObj);
@@ -354,7 +373,7 @@ exit_release_shm:
 	return ret;
 }
 
-int qseecom_start_app(struct qseecom_handle **handle,
+static int __qseecom_start_app(struct qseecom_handle **handle,
 					char *app_name, uint32_t size)
 {
 	int ret = 0;
@@ -423,9 +442,8 @@ exit_free_cxt:
 
 	return ret;
 }
-EXPORT_SYMBOL(qseecom_start_app);
 
-int qseecom_shutdown_app(struct qseecom_handle **handle)
+static int __qseecom_shutdown_app(struct qseecom_handle **handle)
 {
 	struct qseecom_compat_context *cxt =
 		(struct qseecom_compat_context *)(*handle);
@@ -443,9 +461,8 @@ int qseecom_shutdown_app(struct qseecom_handle **handle)
 	*handle = NULL;
 	return 0;
 }
-EXPORT_SYMBOL(qseecom_shutdown_app);
 
-int qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
+static int __qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
 			uint32_t sbuf_len, void *resp_buf, uint32_t rbuf_len)
 {
 	struct qseecom_compat_context *cxt =
@@ -470,5 +487,40 @@ int qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
 				  Object_NULL, Object_NULL,
 				  Object_NULL, Object_NULL);
 }
+
+#if IS_ENABLED(CONFIG_QSEECOM_PROXY)
+const static struct qseecom_drv_ops qseecom_driver_ops = {
+       .qseecom_send_command = __qseecom_send_command,
+       .qseecom_start_app = __qseecom_start_app,
+       .qseecom_shutdown_app = __qseecom_shutdown_app,
+};
+
+int get_qseecom_kernel_fun_ops(void)
+{
+        return provide_qseecom_kernel_fun_ops(&qseecom_driver_ops);
+}
+#else
+
+int qseecom_start_app(struct qseecom_handle **handle,
+                    char *app_name, uint32_t size)
+{
+    return __qseecom_start_app(handle, app_name, size);
+}
+EXPORT_SYMBOL(qseecom_start_app);
+
+int qseecom_shutdown_app(struct qseecom_handle **handle)
+{
+    return __qseecom_shutdown_app(handle);
+}
+EXPORT_SYMBOL(qseecom_shutdown_app);
+
+int qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
+            uint32_t sbuf_len, void *resp_buf, uint32_t rbuf_len)
+{
+    return __qseecom_send_command(handle, send_buf, sbuf_len,
+                        resp_buf, rbuf_len);
+}
 EXPORT_SYMBOL(qseecom_send_command);
+#endif
+
 #endif

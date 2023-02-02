@@ -30,10 +30,15 @@
 #include <soc/qcom/qseecomi.h>
 #include <linux/qtee_shmbridge.h>
 #include <linux/kthread.h>
-#include "misc/qseecom_kernel.h"
 #include "smcinvoke.h"
 #include "smcinvoke_object.h"
 #include "IClientEnv.h"
+#if IS_ENABLED(CONFIG_QSEECOM_PROXY)
+#include <linux/qseecom_kernel.h>
+#include "misc/qseecom_priv.h"
+#else
+#include "misc/qseecom_kernel.h"
+#endif
 
 #define CREATE_TRACE_POINTS
 #include "trace_smcinvoke.h"
@@ -59,7 +64,6 @@
 #define SMCINVOKE_SCM_EBUSY_MAX_RETRY		200
 
 
-
 /* TZ defined values - Start */
 #define SMCINVOKE_INVOKE_PARAM_ID		0x224
 #define SMCINVOKE_CB_RSP_PARAM_ID		0x22
@@ -75,7 +79,7 @@
  */
 #define SMCINVOKE_SERVER_STATE_DEFUNCT		1
 
-#define CBOBJ_MAX_RETRIES 5
+#define CBOBJ_MAX_RETRIES 50
 #define FOR_ARGS(ndxvar, counts, section) \
 	for (ndxvar = OBJECT_COUNTS_INDEX_##section(counts); \
 		ndxvar < (OBJECT_COUNTS_INDEX_##section(counts) \
@@ -160,6 +164,7 @@ static DEFINE_MUTEX(g_smcinvoke_lock);
 enum worker_thread_type {
 	SHMB_WORKER_THREAD      = 0,
 	OBJECT_WORKER_THREAD,
+	ADCI_WORKER_THREAD,
 	MAX_THREAD_NUMBER
 };
 
@@ -278,7 +283,6 @@ struct smcinvoke_mem_obj {
 	uint64_t p_addr;
 	size_t p_addr_len;
 	struct list_head list;
-	bool is_smcinvoke_created_shmbridge;
 	uint64_t shmbridge_handle;
 };
 
@@ -318,7 +322,8 @@ struct smcinvoke_worker_thread {
 
 static struct smcinvoke_worker_thread smcinvoke[MAX_THREAD_NUMBER];
 static const char thread_name[MAX_THREAD_NUMBER][MAX_CHAR_NAME] = {
-	"smcinvoke_shmbridge_postprocess", "smcinvoke_object_postprocess"};
+	"smcinvoke_shmbridge_postprocess", "smcinvoke_object_postprocess", "smcinvoke_adci_thread"};
+static struct Object adci_clientEnv = Object_NULL;
 
 static int prepare_send_scm_msg(const uint8_t *in_buf, phys_addr_t in_paddr,
 		size_t in_buf_len,
@@ -554,6 +559,38 @@ out:
 	return ret;
 }
 
+static void smcinvoke_start_adci_thread(void)
+{
+
+	int32_t  ret = OBJECT_ERROR;
+	int retry_count = 0;
+
+	ret = get_client_env_object(&adci_clientEnv);
+	if (ret) {
+		pr_err("failed to get clientEnv for ADCI invoke thread. ret = %d\n", ret);
+		adci_clientEnv = Object_NULL;
+		goto out;
+	}
+	/* Invoke call to QTEE which should never return if ADCI is supported */
+	do {
+		ret = IClientEnv_accept(adci_clientEnv);
+		if (ret == OBJECT_ERROR_BUSY) {
+			pr_err("Secure side is busy,will retry after 5 ms, retry_count = %d",retry_count);
+			msleep(5);
+		}
+	} while ((ret == OBJECT_ERROR_BUSY) && (retry_count++ < SMCINVOKE_INTERFACE_MAX_RETRY));
+
+	if (ret == OBJECT_ERROR_INVALID)
+		pr_err("ADCI feature is not supported on this chipsets, ret = %d\n", ret);
+	/* Need to take decesion here if we want to restart the ADCI thread */
+	else
+		pr_err("Received response from QTEE, ret = %d\n", ret);
+out:
+	/* Control should reach to this point only if ADCI feature is not supported by QTEE
+	  (or) ADCI thread held in QTEE is released. */
+	Object_ASSIGN_NULL(adci_clientEnv);
+}
+
 static void __wakeup_postprocess_kthread(struct smcinvoke_worker_thread *smcinvoke)
 {
 	if (smcinvoke) {
@@ -576,29 +613,45 @@ static int smcinvoke_postprocess_kthread_func(void *data)
 		return -EINVAL;
 	}
 
-	tag = smcinvoke_wrk_trd->type == SHMB_WORKER_THREAD ? "shmbridge":"object";
-
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(
 			smcinvoke_wrk_trd->postprocess_kthread_wq,
 			kthread_should_stop() ||
 			(atomic_read(&smcinvoke_wrk_trd->postprocess_kthread_state)
 			== POST_KT_WAKEUP));
-		pr_debug("kthread to %s postprocess is called %d\n",
-			tag,
-			atomic_read(&smcinvoke_wrk_trd->postprocess_kthread_state));
 		switch (smcinvoke_wrk_trd->type) {
 		case SHMB_WORKER_THREAD:
+			tag = "shmbridge";
+			pr_debug("kthread to %s postprocess is called %d\n",
+			tag, atomic_read(&smcinvoke_wrk_trd->postprocess_kthread_state));
 			smcinvoke_shmbridge_post_process();
 			break;
 		case OBJECT_WORKER_THREAD:
+			tag = "object";
+			pr_debug("kthread to %s postprocess is called %d\n",
+			tag, atomic_read(&smcinvoke_wrk_trd->postprocess_kthread_state));
 			smcinvoke_object_post_process();
+			break;
+		case ADCI_WORKER_THREAD:
+			tag = "adci";
+			pr_debug("kthread to %s postprocess is called %d\n",
+			tag, atomic_read(&smcinvoke_wrk_trd->postprocess_kthread_state));
+			smcinvoke_start_adci_thread();
 			break;
 		default:
 			pr_err("Invalid thread type(%d), do nothing.\n",
 					(int)smcinvoke_wrk_trd->type);
 			break;
 		}
+		/* For ADCI thread, if control reaches here, that indicates either ADCI
+		 * thread is not supported (or) released by QTEE. Since ADCI thread is
+		 * getting signaled only during the smcinvoke driver initialization,
+		 * there is no point of putting the thread into sleep state again. All the
+		 * required post-processing will be taken care by object and shmbridge threads.
+		 */
+		if(smcinvoke_wrk_trd->type == ADCI_WORKER_THREAD) {
+			break;
+		  }
 		atomic_set(&smcinvoke_wrk_trd->postprocess_kthread_state,
 			POST_KT_SLEEP);
 	}
@@ -612,7 +665,7 @@ static int smcinvoke_create_kthreads(void)
 {
 	int i, rc = 0;
 	const enum worker_thread_type thread_type[MAX_THREAD_NUMBER] = {
-		SHMB_WORKER_THREAD, OBJECT_WORKER_THREAD};
+		SHMB_WORKER_THREAD, OBJECT_WORKER_THREAD, ADCI_WORKER_THREAD};
 
 	for (i = 0; i < MAX_THREAD_NUMBER; i++) {
 		init_waitqueue_head(&smcinvoke[i].postprocess_kthread_wq);
@@ -636,15 +689,31 @@ static int smcinvoke_create_kthreads(void)
 static void smcinvoke_destroy_kthreads(void)
 {
 	int i;
+	int32_t  ret = OBJECT_ERROR;
+	int retry_count = 0;
 
-	for (i = 0; i < MAX_THREAD_NUMBER; i++)
+	if(!Object_isNull(adci_clientEnv)) {
+		do {
+			ret = IClientEnv_adciShutdown(adci_clientEnv);
+			if (ret == OBJECT_ERROR_BUSY) {
+				pr_err("Secure side is busy,will retry after 5 ms, retry_count = %d",retry_count);
+				msleep(5);
+			}
+		} while ((ret == OBJECT_ERROR_BUSY) && (retry_count++ < SMCINVOKE_INTERFACE_MAX_RETRY));
+		if(OBJECT_isERROR(ret)) {
+			pr_err("adciShutdown in QTEE failed with error = %d\n", ret);
+		}
+		Object_ASSIGN_NULL(adci_clientEnv);
+	}
+
+	for (i = 0; i < MAX_THREAD_NUMBER; i++) {
 		kthread_stop(smcinvoke[i].postprocess_kthread_task);
+	}
 }
 
 static inline void free_mem_obj_locked(struct smcinvoke_mem_obj *mem_obj)
 {
 	int ret = 0;
-	bool is_bridge_created = mem_obj->is_smcinvoke_created_shmbridge;
 	struct dma_buf *dmabuf_to_free = mem_obj->dma_buf;
 	uint64_t shmbridge_handle = mem_obj->shmbridge_handle;
 	struct smcinvoke_shmbridge_deregister_pending_list *entry = NULL;
@@ -654,7 +723,7 @@ static inline void free_mem_obj_locked(struct smcinvoke_mem_obj *mem_obj)
 	mem_obj = NULL;
 	mutex_unlock(&g_smcinvoke_lock);
 
-	if (is_bridge_created)
+	if (shmbridge_handle)
 		ret = qtee_shmbridge_deregister(shmbridge_handle);
 	if (ret) {
 		pr_err("Error:%d delete bridge failed leaking memory 0x%x\n",
@@ -1135,13 +1204,7 @@ static int smcinvoke_create_bridge(struct smcinvoke_mem_obj *mem_obj)
 	ret = qtee_shmbridge_register(phys, size, vmid_list, perms_list, nelems,
 			tz_perm, &mem_obj->shmbridge_handle);
 
-	if (ret == 0) {
-		/* In case of ret=0/success handle has to be freed in memobj release */
-		mem_obj->is_smcinvoke_created_shmbridge = true;
-	} else if (ret == -EEXIST) {
-		ret = 0;
-		goto exit;
-	} else {
+	if (ret) {
 		pr_err("creation of shm bridge for mem_region_id %d failed ret %d\n",
 				mem_obj->mem_region_id, ret);
 		goto exit;
@@ -1352,7 +1415,7 @@ static int invoke_cmd_handler(int cmd, phys_addr_t in_paddr, size_t in_buf_len,
 
 	case SMCINVOKE_CB_RSP_CMD:
 		if (legacy_smc_call)
-			qtee_shmbridge_inv_shm_buf(out_shm);
+			qtee_shmbridge_flush_shm_buf(out_shm);
 		ret = qcom_scm_invoke_callback_response(virt_to_phys(out_buf), out_buf_len,
 				result, response_type, data);
 		if (legacy_smc_call) {
@@ -1378,6 +1441,7 @@ static void process_tzcb_req(void *buf, size_t buf_len, struct file **arr_filp)
 	int ret = OBJECT_ERROR_DEFUNCT;
 	int cbobj_retries = 0;
 	long timeout_jiff;
+	bool wait_interrupted = false;
 	struct smcinvoke_cb_txn *cb_txn = NULL;
 	struct smcinvoke_tzcb_req *cb_req = NULL, *tmp_cb_req = NULL;
 	struct smcinvoke_server_info *srvr_info = NULL;
@@ -1462,14 +1526,20 @@ static void process_tzcb_req(void *buf, size_t buf_len, struct file **arr_filp)
 	 */
 	wake_up_interruptible_all(&srvr_info->req_wait_q);
 	/* timeout before 1s otherwise tzbusy would come */
-	timeout_jiff = msecs_to_jiffies(1000);
+	timeout_jiff = msecs_to_jiffies(100);
 
 	while (cbobj_retries < CBOBJ_MAX_RETRIES) {
-		ret = wait_event_timeout(srvr_info->rsp_wait_q,
-				(cb_txn->state == SMCINVOKE_REQ_PROCESSED) ||
-				(srvr_info->state == SMCINVOKE_SERVER_STATE_DEFUNCT),
-				timeout_jiff);
-
+		if (wait_interrupted) {
+			ret = wait_event_timeout(srvr_info->rsp_wait_q,
+					(cb_txn->state == SMCINVOKE_REQ_PROCESSED) ||
+					(srvr_info->state == SMCINVOKE_SERVER_STATE_DEFUNCT),
+					timeout_jiff);
+		} else {
+			ret = wait_event_interruptible_timeout(srvr_info->rsp_wait_q,
+					(cb_txn->state == SMCINVOKE_REQ_PROCESSED) ||
+					(srvr_info->state == SMCINVOKE_SERVER_STATE_DEFUNCT),
+					timeout_jiff);
+		}
 		if (ret == 0) {
 			pr_err("CBobj timed out cb-tzhandle:%d, retry:%d, op:%d counts :%d\n",
 					cb_req->hdr.tzhandle, cbobj_retries,
@@ -1479,7 +1549,13 @@ static void process_tzcb_req(void *buf, size_t buf_len, struct file **arr_filp)
 					current->tgid, srvr_info->state,
 					srvr_info->server_id);
 		} else {
-			break;
+			/* wait_event returned due to a signal */
+			if (srvr_info->state != SMCINVOKE_SERVER_STATE_DEFUNCT &&
+					cb_txn->state != SMCINVOKE_REQ_PROCESSED) {
+				wait_interrupted = true;
+			} else {
+				break;
+			}
 		}
 		cbobj_retries++;
 	}
@@ -1647,7 +1723,7 @@ static int prepare_send_scm_msg(const uint8_t *in_buf, phys_addr_t in_paddr,
 					&response_type, &data, in_shm, out_shm);
 
 			if (ret == -EBUSY) {
-				pr_err("Secure side is busy,will retry after 30 ms\n");
+				pr_err("Secure side is busy,will retry after 30 ms, retry_count = %d",retry_count);
 				mutex_unlock(&g_smcinvoke_lock);
 				msleep(SMCINVOKE_SCM_EBUSY_WAIT_MS);
 				mutex_lock(&g_smcinvoke_lock);
@@ -1925,6 +2001,12 @@ static int marshal_out_tzcb_req(const struct smcinvoke_accept *user_req,
 
 	release_tzhandles(&cb_txn->cb_req->hdr.tzhandle, 1);
 	tzcb_req->result = user_req->result;
+        /* Return without marshaling user args if destination callback invocation was
+           unsuccessful. */
+        if (tzcb_req->result != 0) {
+                ret = 0;
+                goto out;
+        }
 	FOR_ARGS(i, tzcb_req->hdr.counts, BO) {
 		union smcinvoke_arg tmp_arg;
 
@@ -1963,12 +2045,12 @@ static int marshal_out_tzcb_req(const struct smcinvoke_accept *user_req,
 		trace_marshal_out_tzcb_req(i, tmp_arg.o.fd,
 				tmp_arg.o.cb_server_fd, tz_args[i].handle);
 	}
-	FOR_ARGS(i, tzcb_req->hdr.counts, OI) {
-		if (TZHANDLE_IS_CB_OBJ(tz_args[i].handle))
-			release_tzhandles(&tz_args[i].handle, 1);
-	}
 	ret = 0;
 out:
+        FOR_ARGS(i, tzcb_req->hdr.counts, OI) {
+                if (TZHANDLE_IS_CB_OBJ(tz_args[i].handle))
+                        release_tzhandles(&tz_args[i].handle, 1);
+        }
 	if (ret)
 		release_tzhandles(tzhandles_to_release, OBJECT_COUNTS_MAX_OO);
 	return ret;
@@ -2267,7 +2349,9 @@ static long process_invoke_req(struct file *filp, unsigned int cmd,
 	if (context_type == SMCINVOKE_OBJ_TYPE_TZ_OBJ &&
 			tzobj->tzhandle == SMCINVOKE_TZ_ROOT_OBJ &&
 			(req.op == IClientEnv_OP_notifyDomainChange ||
-			req.op == IClientEnv_OP_registerWithCredentials)) {
+			req.op == IClientEnv_OP_registerWithCredentials ||
+			req.op == IClientEnv_OP_accept ||
+			req.op == IClientEnv_OP_adciShutdown)) {
 		pr_err("invalid rootenv op\n");
 		return -EINVAL;
 	}
@@ -2724,6 +2808,15 @@ static int smcinvoke_probe(struct platform_device *pdev)
 	}
 	smcinvoke_pdev = pdev;
 
+#if !IS_ENABLED(CONFIG_QSEECOM) && IS_ENABLED(CONFIG_QSEECOM_PROXY)
+	/*If the api fails to get the func ops, print the error and continue
+	* Do not treat it as fatal*/
+	rc = get_qseecom_kernel_fun_ops();
+	if (rc) {
+		pr_err("failed to get qseecom kernel func ops %d", rc);
+	}
+#endif
+	__wakeup_postprocess_kthread(&smcinvoke[ADCI_WORKER_THREAD]);
 	return 0;
 
 exit_destroy_device:
