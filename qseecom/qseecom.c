@@ -131,8 +131,10 @@
 			err = copy_from_user((dst),\
 			(void const __user *)(src),\
 			(size));\
-		else\
+		else {\
 			memmove((dst), (src), (size));\
+			err = 0;\
+		}\
 	} while (0)
 
 #define K_COPY_TO_USER(err, dst, src, size) \
@@ -140,8 +142,10 @@
 		if (__user_ok((unsigned long)dst,size))\
 			err = copy_to_user((void __user *)(dst),\
 			(src), (size));\
-		else\
+		else {\
 			memmove((dst), (src), (size));\
+			err = 0;\
+		}\
 	} while (0)
 
 enum qseecom_clk_definitions {
