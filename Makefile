@@ -1,7 +1,7 @@
-M=$(abspath $(lastword $(MAKEFILE_LIST)))
-SSG_MODULE_ROOT=$(dir $(M))
+M=$(PWD)
+SSG_MODULE_ROOT=$(KERNEL_SRC)/$(M)
 INC=-I/$(M)/linux/*
-KBUILD_OPTIONS+=SSG_MODULE_ROOT=$(M)
+KBUILD_OPTIONS+=SSG_MODULE_ROOT=$(SSG_MODULE_ROOT)
 
 all: modules
 
