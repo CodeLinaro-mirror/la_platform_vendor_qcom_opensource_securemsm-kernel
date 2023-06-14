@@ -3,7 +3,7 @@
  * QTI Secure Execution Environment Communicator (QSEECOM) driver
  *
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QSEECOM: %s: " fmt, __func__
@@ -118,6 +118,29 @@
 
 #define FDE_FLAG_POS    4
 #define ENABLE_KEY_WRAP_IN_KS    (1 << FDE_FLAG_POS)
+
+#define K_COPY_FROM_USER(err, dst, src, size) \
+	do {\
+		if (!(is_compat_task()))\
+			err = copy_from_user((dst),\
+			(void const __user *)(src),\
+			(size));\
+		else {\
+			memmove((dst), (src), (size));\
+			err = 0;\
+		}\
+	} while (0)
+
+#define K_COPY_TO_USER(err, dst, src, size) \
+	do {\
+		if(!(is_compat_task()))\
+			err = copy_to_user((void __user *)(dst),\
+			(src), (size));\
+		else {\
+			memmove((dst), (src), (size));\
+			err = 0;\
+		}\
+	} while (0)
 
 enum qseecom_clk_definitions {
 	CLK_DFAB = 0,
@@ -5487,8 +5510,10 @@ static int __qseecom_send_modfd_resp(struct qseecom_dev_handle *data,
 {
 	struct qseecom_send_modfd_listener_resp resp;
 	struct qseecom_registered_listener_list *this_lstnr = NULL;
+	int ret = 0;
 
-	if (copy_from_user(&resp, argp, sizeof(resp))) {
+	K_COPY_FROM_USER(ret, &resp, argp, sizeof(resp));
+	if(ret) {
 		pr_err("copy_from_user failed\n");
 		return -EINVAL;
 	}
@@ -5529,13 +5554,16 @@ static int qseecom_get_qseos_version(struct qseecom_dev_handle *data,
 						void __user *argp)
 {
 	struct qseecom_qseos_version_req req;
+	int ret = 0;
 
-	if (copy_from_user(&req, argp, sizeof(req))) {
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
+	if(ret) {
 		pr_err("copy_from_user failed\n");
 		return -EINVAL;
 	}
 	req.qseos_version = qseecom.qseos_version;
-	if (copy_to_user(argp, &req, sizeof(req))) {
+	K_COPY_TO_USER(ret, argp, &req, sizeof(req));
+	if(ret) {
 		pr_err("copy_to_user failed\n");
 		return -EINVAL;
 	}
@@ -5826,9 +5854,9 @@ static int qseecom_load_external_elf(struct qseecom_dev_handle *data,
 	void *va = NULL;
 
 	/* Copy the relevant information needed for loading the image */
-	if (copy_from_user(&load_img_req,
-				(void __user *)argp,
-				sizeof(struct qseecom_load_img_req))) {
+	K_COPY_FROM_USER(ret, &load_img_req, argp,
+				sizeof(struct qseecom_load_img_req));
+	if(ret) {
 		pr_err("copy_from_user failed\n");
 		return -EFAULT;
 	}
@@ -6630,14 +6658,13 @@ static int __qseecom_create_key_in_slot(uint8_t usage_code, uint8_t key_slot, co
 			pr_err("Set the key successfully\n");
 			if ((create_key_req.usage ==
 				QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION) ||
-			     (create_key_req.usage ==
+				(create_key_req.usage ==
 				QSEOS_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION))
 				goto free_buf;
 		}
 	}
 
 free_buf:
-	//kzfree(ce_hw);
 	kfree_sensitive(ce_hw);
 	if ((ret == 0) && (new_key_generated)) {
 		//Success , key already exists code
@@ -6645,7 +6672,6 @@ free_buf:
 	}
 	return ret;
 }
-//EXPORT_SYMBOL(qseecom_create_key_in_slot);
 #endif //CONFIG_QTI_CRYPTO_FDE
 
 static int qseecom_create_key(struct qseecom_dev_handle *data,
@@ -6782,7 +6808,7 @@ static int qseecom_create_key(struct qseecom_dev_handle *data,
 			pr_err("Set the key successfully\n");
 			if ((create_key_req.usage ==
 				QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION) ||
-			     (create_key_req.usage ==
+				(create_key_req.usage ==
 				QSEOS_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION))
 				goto free_buf;
 		}
@@ -7737,9 +7763,8 @@ static int qseecom_qteec_request_cancellation(struct qseecom_dev_handle *data,
 	struct qseecom_qteec_modfd_req req;
 	int ret = 0;
 
-	ret = copy_from_user(&req, argp,
-				sizeof(struct qseecom_qteec_modfd_req));
-	if (ret) {
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(struct qseecom_qteec_modfd_req));
+	if(ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
 	}
