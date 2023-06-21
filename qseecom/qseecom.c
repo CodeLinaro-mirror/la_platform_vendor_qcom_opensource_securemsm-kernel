@@ -99,7 +99,9 @@
 #define TWO 2
 #define QSEECOM_UFS_ICE_CE_NUM 10
 #define QSEECOM_SDCC_ICE_CE_NUM 20
-#define QSEECOM_ICE_FDE_KEY_INDEX 0
+
+/* Assume the ice device contains 32 slots (0-31) and reserve the last one for the FDE  */
+#define QSEECOM_ICE_FDE_KEY_INDEX 31
 
 #define PHY_ADDR_4G	(1ULL<<32)
 
@@ -6448,7 +6450,7 @@ static int qseecom_enable_ice_setup(int usage)
 #endif
 	else if (usage == QSEOS_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION)
 #if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
-		crypto_qti_ice_setup_ice_hw("sdcc", true);
+		ret = crypto_qti_ice_setup_ice_hw("sdcc", true);
 #else
 		ret = qcom_ice_setup_ice_hw("sdcc", true);
 #endif
@@ -6461,13 +6463,13 @@ static int qseecom_disable_ice_setup(int usage)
 
 	if (usage == QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION)
 #if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
-		crypto_qti_ice_setup_ice_hw("ufs", false);
+		ret = crypto_qti_ice_setup_ice_hw("ufs", false);
 #else
 		ret = qcom_ice_setup_ice_hw("ufs", false);
 #endif
 	else if (usage == QSEOS_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION)
 #if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
-		crypto_qti_ice_setup_ice_hw("sdcc", false);
+		ret = crypto_qti_ice_setup_ice_hw("sdcc", false);
 #else
 		ret = qcom_ice_setup_ice_hw("sdcc", false);
 #endif
@@ -8487,10 +8489,14 @@ long qseecom_ioctl(struct file *file,
 		break;
 	}
 	case QSEECOM_IOCTL_SET_ICE_INFO: {
-		//Return success for backwards compatibility
-		//This call is redundant and not required anymore
-		pr_info("SET_ICE_INFO is reduntant call,return success for backwards compatibility\n");
-		ret = 0;
+		struct qseecom_ice_data_t ice_data;
+
+		ret = copy_from_user(&ice_data, argp, sizeof(ice_data));
+		if (ret) {
+			pr_err("copy_from_user failed\n");
+			return -EFAULT;
+		}
+		crypto_qti_ice_set_fde_flag(ice_data.flag);
 		break;
 	}
 	case QSEECOM_IOCTL_FBE_CLEAR_KEY: {
