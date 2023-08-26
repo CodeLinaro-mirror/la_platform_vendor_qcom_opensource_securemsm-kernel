@@ -1520,7 +1520,15 @@ static void process_kernel_obj(void *buf, size_t buf_len)
 
 	switch (cb_req->hdr.op) {
 	case OBJECT_OP_MAP_REGION:
-		pr_err("Received a request to map memory region\n");
+		if (mem_obj_async_support) {
+			/* Mapping requests are not supposed to come
+			 * from TZ once memory object async support
+			 * is enabled.
+			 * If they are still coming, we would like to
+			 * know about it.
+			 */
+			pr_info("Received a request to map memory region\n");
+		}
 		cb_req->result = smcinvoke_process_map_mem_region_req(buf, buf_len);
 		break;
 	case OBJECT_OP_YIELD:
@@ -2792,7 +2800,6 @@ static long process_invoke_req(struct file *filp, unsigned int cmd,
 	if (mem_obj_async_support) {
 		mutex_lock(&g_smcinvoke_lock);
 		add_mem_obj_info_to_async_side_channel_locked(out_msg, outmsg_size, &l_mem_objs_pending_async);
-		delete_pending_async_list_locked(&l_mem_objs_pending_async);
 		mutex_unlock(&g_smcinvoke_lock);
 	}
 
@@ -2850,6 +2857,7 @@ out:
 		release_map_obj_pending_async_list_locked(&l_mem_objs_pending_async);
 		release_tzhandles(tzhandles_to_release, OBJECT_COUNTS_MAX_OO);
 	}
+	delete_pending_async_list_locked(&l_mem_objs_pending_async);
 	qtee_shmbridge_free_shm(&in_shm);
 	qtee_shmbridge_free_shm(&out_shm);
 	kfree(args_buf);
