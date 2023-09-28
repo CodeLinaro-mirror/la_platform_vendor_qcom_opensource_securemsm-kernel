@@ -250,6 +250,8 @@ struct ce_request_info {
 	enum qce_offload_op_enum offload_op;
 	enum qce_pipe_enum  pipe_index;
 	u32 key_index;
+	bool results_dump_enabled;
+	bool smmu_mapped_by_request;
 };
 
 struct qce_driver_stats {

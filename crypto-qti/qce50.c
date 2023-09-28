@@ -217,6 +217,7 @@ struct qce_device {
 	bool no_clock_gating;
 	bool reset_with_recovery_req;
 	uint32_t bam_phy_reg_mask;
+	bool results_dump_input_support;
 };
 
 static void print_notify_debug(struct sps_event_notify *notify);
@@ -288,6 +289,46 @@ static void qce_choose_pipe_from_op(struct qce_device *pce_dev, int req_info)
 	pr_debug("req: %d, using pipe %d.\n", req_info, preq_info->pipe_index);
 }
 
+static bool is_secure_input_op(enum qce_offload_op_enum op)
+{
+	return (op == QCE_OFFLOAD_CPB_HLOS);
+}
+static bool is_secure_output_op(int op)
+{
+	return (op == QCE_OFFLOAD_HLOS_CPB || op == QCE_OFFLOAD_HLOS_CPB_1);
+}
+
+/**
+ * @brief Tries to enable results dump by checking necessary conditions
+ * @param pce_dev: device information and driver context
+ * @param req_info: identifier for request information
+ * @details Modifies pce_dev->ce_request_info[req_info] to enable results dump
+ * by checking if engine supports it and HLOS has access to results dump buffer.
+ * Must set offload_op before this function.
+ */
+static void try_results_dump_enable(struct qce_device *pce_dev, int req_info)
+{
+	struct ce_request_info *preq_info = &pce_dev->ce_request_info[req_info];
+	enum qce_offload_op_enum op = preq_info->offload_op;
+
+	if (pce_dev->results_dump_input_support) {
+		if (!is_secure_input_op(op))
+			preq_info->results_dump_enabled = true;
+		else if (!is_secure_output_op(op))
+			preq_info->results_dump_enabled = true;
+		else
+			preq_info->results_dump_enabled = false;
+	} else {
+		if (!is_secure_output_op(op))
+			preq_info->results_dump_enabled = true;
+		else
+			preq_info->results_dump_enabled = false;
+	}
+
+	if (!preq_info->results_dump_enabled)
+		pr_warn("results dump disabled for req_info: %d\n", req_info);
+}
+
 /* Set the key index, remapping if needed. Pipe must be chosen first. */
 static void qce_choose_key_index(struct qce_device *pce_dev, int req_info,
 		u32 key_index)
@@ -298,17 +339,6 @@ static void qce_choose_key_index(struct qce_device *pce_dev, int req_info,
 		key_index = legacy_op_to_key_index[preq_info->offload_op];
 
 	preq_info->key_index = key_index;
-}
-
-/*
- * Requests for offload operations do not require explicit dma operations
- * as they already have SMMU mapped source/destination buffers.
- */
-static bool is_offload_op(enum qce_offload_op_enum op)
-{
-	return (op == QCE_OFFLOAD_HLOS_HLOS || op == QCE_OFFLOAD_HLOS_HLOS_1 ||
-		op == QCE_OFFLOAD_CPB_HLOS || op == QCE_OFFLOAD_HLOS_CPB ||
-		op == QCE_OFFLOAD_HLOS_CPB_1);
 }
 
 static uint32_t qce_get_config_be(struct qce_device *pce_dev,
@@ -412,7 +442,7 @@ void qce_get_crypto_status(void *handle, struct qce_error *error)
 			else if ((status[2] & CRYPTO5_LEGACY_KEY_PAUSE_STATUS3) ||
 					(status[5] & CRYPTO5_LEGACY_KEY_PAUSE_STATUS6)) {
 				error->key_paused = true;
-				pr_err("%s: key paused, reder status 3 and 6\n",
+				pr_err("%s: key paused, refer status 3 and 6\n",
 					__func__);
 			} else {
 				pr_err("%s: generic error, refer all status\n",
@@ -425,8 +455,10 @@ void qce_get_crypto_status(void *handle, struct qce_error *error)
 	}
 
 	error->no_error = true;
+#ifdef QCE_DEBUG
 	pr_info("%s: No crypto error, status1 = 0x%x\n",
 		   __func__, status[0]);
+#endif
 
 	return;
 }
@@ -629,6 +661,8 @@ static int _probe_ce_engine(struct qce_device *pce_dev)
 				i, pce_dev->ce_bam_info.src_pipe_index[i],
 				i, pce_dev->ce_bam_info.dest_pipe_index[i]);
 	}
+
+	pce_dev->results_dump_input_support = (rev >= CRYPTO_CORE_REV(5, 9, 0));
 
 	return 0;
 };
@@ -1391,14 +1425,15 @@ static int _ce_setup_cipher(struct qce_device *pce_dev, struct qce_req *creq,
 		pce->data = pce_dev->reg.encr_cntr_mask_0;
 	}
 
+	try_results_dump_enable(pce_dev, creq->current_req_info);
 	pce = cmdlistinfo->go_proc;
-	pce->data = 0;
-	if (is_offload_op(creq->offload_op))
-		pce->data = ((1 << CRYPTO_GO) | (1 << CRYPTO_CLR_CNTXT));
-	else
-		pce->data = ((1 << CRYPTO_GO) | (1 << CRYPTO_CLR_CNTXT) |
-				(1 << CRYPTO_RESULTS_DUMP));
-
+	pce->data = ((1 << CRYPTO_GO) | (1 << CRYPTO_CLR_CNTXT));
+	if (preq_info->results_dump_enabled) {
+		pce->data |= (1 << CRYPTO_RESULTS_DUMP);
+		if (is_secure_input_op(preq_info->offload_op) &&
+		    pce_dev->results_dump_input_support)
+			pce->data |= (1 << CRYPTO_RESULTS_DUMP_USE_OUT_SID);
+	}
 
 	return 0;
 }
@@ -2019,7 +2054,7 @@ static int _ablk_cipher_complete(struct qce_device *pce_dev, int req_info)
 	qce_callback = preq_info->qce_cb;
 	areq = (struct skcipher_request *) preq_info->areq;
 
-	if (!is_offload_op(preq_info->offload_op)) {
+	if (preq_info->smmu_mapped_by_request) {
 		if (areq->src != areq->dst)
 			qce_dma_unmap_sg(pce_dev->pdev, areq->dst,
 					preq_info->dst_nents, DMA_FROM_DEVICE);
@@ -2037,7 +2072,8 @@ static int _ablk_cipher_complete(struct qce_device *pce_dev, int req_info)
 	result_dump_status = be32_to_cpu(pce_sps_data->result->status);
 	pce_sps_data->result->status = 0;
 
-	if (!is_offload_op(preq_info->offload_op)) {
+	/* Check for errors in results_dump if it was not disabled */
+	if (preq_info->results_dump_enabled) {
 		if (result_dump_status & ((1 << CRYPTO_SW_ERR) |
 			(1 << CRYPTO_AXI_ERR) | (1 <<  CRYPTO_HSD_ERR))) {
 			pr_err("ablk_cipher operation error. Status %x\n",
@@ -2960,7 +2996,7 @@ static void _sps_producer_callback(struct sps_event_notify *notify)
 		preq_info->xfer_type == QCE_XFER_AEAD) &&
 			pce_sps_data->producer_state == QCE_PIPE_STATE_IDLE) {
 		pce_sps_data->producer_state = QCE_PIPE_STATE_COMP;
-		if (!is_offload_op(op) && (op < QCE_OFFLOAD_OPER_LAST)) {
+		if (!preq_info->results_dump_enabled) {
 			pce_sps_data->out_transfer.iovec_count = 0;
 			_qce_sps_add_data(pce_dev, GET_PHYS_ADDR(
 					pce_sps_data->result_dump),
@@ -5076,16 +5112,18 @@ int qce_ablk_cipher_req(void *handle, struct qce_req *c_req)
 	/* cipher input */
 	preq_info->src_nents = count_sg(areq->src, areq->cryptlen);
 
-	if (!is_offload_op(c_req->offload_op))
+	if (!c_req->is_smmu_mapped) {
+		preq_info->smmu_mapped_by_request = true;
 		qce_dma_map_sg(pce_dev->pdev, areq->src,
 			preq_info->src_nents,
 			(areq->src == areq->dst) ? DMA_BIDIRECTIONAL :
 						DMA_TO_DEVICE);
+	}
 
 	/* cipher output */
 	if (areq->src != areq->dst) {
 		preq_info->dst_nents = count_sg(areq->dst, areq->cryptlen);
-		if (!is_offload_op(c_req->offload_op))
+		if (!c_req->is_smmu_mapped)
 			qce_dma_map_sg(pce_dev->pdev, areq->dst,
 				preq_info->dst_nents, DMA_FROM_DEVICE);
 	} else {
@@ -5163,12 +5201,12 @@ int qce_ablk_cipher_req(void *handle, struct qce_req *c_req)
 
 	rc = _qce_sps_add_data(pce_dev, areq->dst->dma_address, areq->cryptlen,
 					&pce_sps_data->out_transfer, true,
-					!is_offload_op(c_req->offload_op));
+					preq_info->results_dump_enabled);
 	if (rc)
 		goto bad;
 	if (pce_dev->no_get_around || areq->cryptlen <= SPS_MAX_PKT_SIZE) {
 		pce_sps_data->producer_state = QCE_PIPE_STATE_COMP;
-		if (!is_offload_op(c_req->offload_op)) {
+		if (preq_info->results_dump_enabled) {
 			rc = _qce_sps_add_data(pce_dev,
 				GET_PHYS_ADDR(pce_sps_data->result_dump),
 				CRYPTO_RESULT_DUMP_SIZE,
@@ -5188,7 +5226,7 @@ int qce_ablk_cipher_req(void *handle, struct qce_req *c_req)
 
 	return 0;
 bad:
-	if (!is_offload_op(c_req->offload_op)) {
+	if (preq_info->smmu_mapped_by_request) {
 		if (areq->src != areq->dst)
 			if (preq_info->dst_nents)
 				qce_dma_unmap_sg(pce_dev->pdev, areq->dst,
