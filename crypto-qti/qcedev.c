@@ -26,15 +26,13 @@
 #include "linux/qcedev.h"
 #include <linux/interconnect.h>
 #include <linux/delay.h>
-#include "linux/compat_qcedev.h"
+#include <linux/version.h>
 
 #include <crypto/hash.h>
 #include "qcedevi.h"
 #include "qce.h"
 #include "qcedev_smmu.h"
 #include "qcom_crypto_device.h"
-
-#include <linux/compat.h>
 
 #define CACHE_LINE_SIZE 64
 #define CE_SHA_BLOCK_SIZE SHA256_BLOCK_SIZE
@@ -236,9 +234,6 @@ static int start_sha_req(struct qcedev_control *podev,
 static const struct file_operations qcedev_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = qcedev_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = compat_qcedev_ioctl,
-#endif
 	.open = qcedev_open,
 	.release = qcedev_release,
 };
@@ -402,7 +397,7 @@ void qcedev_cipher_req_cb(void *cookie, unsigned char *icv,
 		return;
 	qcedev_areq = podev->active_command;
 
-	if (iv)
+	if (iv && qcedev_areq)
 		memcpy(&qcedev_areq->cipher_op_req.iv[0], iv,
 					qcedev_areq->cipher_op_req.ivlen);
 	tasklet_schedule(&podev->done_tasklet);
@@ -530,7 +525,7 @@ void qcedev_offload_cipher_req_cb(void *cookie, unsigned char *icv,
 		return;
 	qcedev_areq = podev->active_command;
 
-	if (iv)
+	if (iv && qcedev_areq)
 		memcpy(&qcedev_areq->offload_cipher_op_req.iv[0], iv,
 			qcedev_areq->offload_cipher_op_req.ivlen);
 
@@ -2525,7 +2520,11 @@ static int qcedev_probe_device(struct platform_device *pdev)
 		return rc;
 	}
 
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	driver_class = class_create(QCEDEV_DEV);
+#else
 	driver_class = class_create(THIS_MODULE, QCEDEV_DEV);
+#endif
 	if (IS_ERR(driver_class)) {
 		rc = -ENOMEM;
 		pr_err("class_create failed %d\n", rc);

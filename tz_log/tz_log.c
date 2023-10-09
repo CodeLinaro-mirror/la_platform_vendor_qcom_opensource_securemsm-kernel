@@ -20,10 +20,14 @@
 #include <linux/uaccess.h>
 #include <linux/of.h>
 #include <linux/dma-buf.h>
+#include <linux/version.h>
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+#include <linux/firmware/qcom/qcom_scm.h>
+#else
 #include <linux/qcom_scm.h>
+#endif
 #include <linux/qtee_shmbridge.h>
 #include <linux/proc_fs.h>
-#include <linux/version.h>
 #if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
 #include <linux/tmelog.h>
 #endif
@@ -1358,7 +1362,7 @@ static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
 	stat->display_offset += ret;
 	stat->display_len -= ret;
 	pr_debug("ret = %d, offset = %d\n", ret, (int)(*offp));
-	pr_debug("display_len = %d, offset = %d\n",
+	pr_debug("display_len = %lu, offset = %lu\n",
 			stat->display_len, stat->display_offset);
 	return ret;
 }
@@ -1479,7 +1483,7 @@ static int tzdbg_register_qsee_log_buf(struct platform_device *pdev)
 	ret = qcom_scm_register_qsee_log_buf(coh_pmem, qseelog_buf_size);
 	if (ret != QSEOS_RESULT_SUCCESS) {
 		pr_err(
-		"%s: scm_call to register log buf failed, resp result =%lld\n",
+		"%s: scm_call to register log buf failed, resp result =%d\n",
 		__func__, ret);
 		goto exit_dereg_bridge;
 	}
@@ -1697,7 +1701,7 @@ static int __update_rmlog_base(struct platform_device *pdev,
 					rmlog_address,
 					rmlog_size);
 	if (!tzdbg.rmlog_virt_iobase) {
-		dev_err(&pdev->dev, "ERROR could not ioremap: start=%pr, len=%u\n",
+		dev_err(&pdev->dev, "ERROR could not ioremap: start=%u, len=%u\n",
 			rmlog_address, tzdbg.rmlog_rw_buf_size);
 		return -ENXIO;
 	}
@@ -1729,7 +1733,7 @@ static int tzdbg_get_tz_version(void)
 				__func__, ret);
 		return ret;
 	}
-	pr_warn("tz diag version is %x\n", version);
+	pr_warn("tz diag version is %llu\n", version);
 	tzdbg.tz_diag_major_version =
 		((version >> TZBSP_FVER_MAJOR_SHIFT) & TZBSP_FVER_MAJOR_MINOR_MASK);
 	tzdbg.tz_diag_minor_version =
@@ -1763,7 +1767,7 @@ static void tzdbg_query_encrypted_log(void)
 			pr_err("scm_call QUERY_ENCR_LOG_FEATURE failed ret %d\n", ret);
 		tzdbg.is_encrypted_log_enabled = false;
 	} else {
-		pr_warn("encrypted qseelog enabled is %d\n", enabled);
+		pr_warn("encrypted qseelog enabled is %llu\n", enabled);
 		tzdbg.is_encrypted_log_enabled = enabled;
 	}
 }
