@@ -25,6 +25,13 @@ endif
 include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smcinvoke.conf
 LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smcinvoke.h
 
+ifeq ($(CONFIG_ARCH_QTI_VM), y)
+    ifneq (, $(filter y, $(CONFIG_ARCH_SA525) $(CONFIG_ARCH_LEMANS)))
+        include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qrng.conf
+        LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qrng.h
+    endif
+endif
+
 obj-$(CONFIG_QCOM_SMCINVOKE) += smcinvoke_dlkm.o
 smcinvoke_dlkm-objs := smcinvoke/smcinvoke_kernel.o smcinvoke/smcinvoke.o
 
