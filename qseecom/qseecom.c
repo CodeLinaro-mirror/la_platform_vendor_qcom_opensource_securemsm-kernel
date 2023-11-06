@@ -22,7 +22,6 @@
 #include <linux/mutex.h>
 #include <linux/io.h>
 #include <linux/dma-buf.h>
-#include <linux/ion.h>
 #include <linux/msm_ion.h>
 #include <linux/types.h>
 #include <linux/clk.h>
@@ -424,7 +423,7 @@ struct qseecom_client_handle {
 
 struct qseecom_listener_handle {
 	u32               id;
-	bool              unregister_pending;
+	bool              register_pending;
 	bool              release_called;
 };
 
@@ -1269,12 +1268,11 @@ static int qseecom_dmabuf_cache_operations(struct dma_buf *dmabuf,
 
 	switch (cache_op) {
 	case QSEECOM_CACHE_CLEAN: /* Doing CLEAN and INVALIDATE */
-		dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
+		dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 		break;
 	case QSEECOM_CACHE_INVALIDATE:
-		dma_buf_begin_cpu_access(dmabuf, DMA_TO_DEVICE);
-		dma_buf_end_cpu_access(dmabuf, DMA_FROM_DEVICE);
+		dma_buf_begin_cpu_access(dmabuf, DMA_FROM_DEVICE);
 		break;
 	default:
 		pr_err("cache (%d) operation not supported\n",
@@ -1444,10 +1442,10 @@ static int qseecom_vaddr_map(int ion_fd,
 
 	*paddr = sg_dma_address(new_sgt->sgl);
 	*sb_length = new_sgt->sgl->length;
-
+	//Invalidate the Buffer
 	dma_buf_begin_cpu_access(new_dma_buf, DMA_BIDIRECTIONAL);
 	ret = dma_buf_vmap(new_dma_buf, &new_dma_buf_map);
-    new_va = ret ? NULL : new_dma_buf_map.vaddr;
+	new_va = ret ? NULL : new_dma_buf_map.vaddr;
 	if (!new_va) {
 		pr_err("dma_buf_vmap failed\n");
 		ret = -ENOMEM;
@@ -1460,7 +1458,9 @@ static int qseecom_vaddr_map(int ion_fd,
 	return ret;
 
 err_unmap:
+	//Flush the buffer (i.e. Clean and invalidate)
 	dma_buf_end_cpu_access(new_dma_buf, DMA_BIDIRECTIONAL);
+	dma_buf_begin_cpu_access(new_dma_buf, DMA_BIDIRECTIONAL);
 	qseecom_dmabuf_unmap(new_sgt, new_attach, new_dma_buf);
 	MAKE_NULL(*sgt, *attach, *dmabuf);
 err:
@@ -1562,6 +1562,11 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	struct qseecom_registered_listener_list *new_entry;
 	struct qseecom_registered_listener_list *ptr_svc;
 
+	if (data->listener.register_pending) {
+		pr_err("Already a listner registration is in process on this FD\n");
+		return -EINVAL;
+	}
+
 	ret = copy_from_user(&rcvd_lstnr, argp, sizeof(rcvd_lstnr));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
@@ -1570,6 +1575,12 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	if (!access_ok((void __user *)rcvd_lstnr.virt_sb_base,
 			rcvd_lstnr.sb_size))
 		return -EFAULT;
+
+	ptr_svc = __qseecom_find_svc(data->listener.id);
+	if (ptr_svc) {
+		pr_err("Already a listener registered on this data: lid=%d\n", data->listener.id);
+		return -EINVAL;
+	}
 
 	ptr_svc = __qseecom_find_svc(rcvd_lstnr.listener_id);
 	if (ptr_svc) {
@@ -1614,13 +1625,16 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	new_entry->svc.listener_id = rcvd_lstnr.listener_id;
 	new_entry->sb_length = rcvd_lstnr.sb_size;
 	new_entry->user_virt_sb_base = rcvd_lstnr.virt_sb_base;
+	data->listener.register_pending = true;
 	if (__qseecom_set_sb_memory(new_entry, data, &rcvd_lstnr)) {
 		pr_err("qseecom_set_sb_memory failed for listener %d, size %d\n",
 				rcvd_lstnr.listener_id, rcvd_lstnr.sb_size);
 		__qseecom_free_tzbuf(&new_entry->sglistinfo_shm);
 		kfree_sensitive(new_entry);
+		data->listener.register_pending = false;
 		return -ENOMEM;
 	}
+	data->listener.register_pending = false;
 
 	init_waitqueue_head(&new_entry->rcv_req_wq);
 	init_waitqueue_head(&new_entry->listener_block_app_wq);
@@ -2020,8 +2034,8 @@ static int qseecom_set_client_mem_param(struct qseecom_dev_handle *data,
 
 	if ((req.ifd_data_fd <= 0) || (req.virt_sb_base == NULL) ||
 					(req.sb_len == 0)) {
-		pr_err("Invalid input(s)ion_fd(%d), sb_len(%d), vaddr(0x%pK)\n",
-			req.ifd_data_fd, req.sb_len, req.virt_sb_base);
+		pr_err("Invalid input(s)ion_fd(%d), sb_len(%d)\n",
+			req.ifd_data_fd, req.sb_len);
 		return -EFAULT;
 	}
 	if (!access_ok((void __user *)req.virt_sb_base,
@@ -3118,7 +3132,7 @@ static int qseecom_unload_app(struct qseecom_dev_handle *data,
 
 	ret = __qseecom_cleanup_app(data);
 	if (ret && !app_crash) {
-		pr_err("cleanup app failed, pending ioctl:%d\n", data->ioctl_count);
+		pr_err("cleanup app failed, pending ioctl:%d\n", data->ioctl_count.counter);
 		return ret;
 	}
 
@@ -7626,6 +7640,16 @@ long qseecom_ioctl(struct file *file,
 	struct qseecom_dev_handle *data = file->private_data;
 	void __user *argp = (void __user *) arg;
 	bool perf_enabled = false;
+
+	if (atomic_read(&qseecom.qseecom_state) != QSEECOM_STATE_READY) {
+		pr_err("Not allowed to be called in %d state\n",
+				atomic_read(&qseecom.qseecom_state));
+		/* since the state is not ready returning device not configured yet
+		 * i.e operation can't be performed on device yet.
+		 */
+		return -ENXIO;
+	}
+
 	if (!data) {
 		pr_err("Invalid/uninitialized device handle\n");
 		return -EINVAL;
@@ -9323,7 +9347,11 @@ static int qseecom_init_dev(struct platform_device *pdev)
 		pr_err("alloc_chrdev_region failed %d\n", rc);
 		return rc;
 	}
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	qseecom.driver_class = class_create(QSEECOM_DEV);
+#else
 	qseecom.driver_class = class_create(THIS_MODULE, QSEECOM_DEV);
+#endif
 	if (IS_ERR(qseecom.driver_class)) {
 		rc = PTR_ERR(qseecom.driver_class);
 		pr_err("class_create failed %x\n", rc);
@@ -9542,19 +9570,19 @@ static int qseecom_register_heap_shmbridge(struct platform_device *pdev,
 
 	node = of_parse_phandle(pdev->dev.of_node, heap_mem_region_name, 0);
 	if (!node) {
-		pr_err("unable to parse memory-region of heap %d\n", heap_mem_region_name);
+		pr_err("unable to parse memory-region of heap %s\n", heap_mem_region_name);
 		return -EINVAL;
 	}
 	rmem = of_reserved_mem_lookup(node);
 	if (!rmem) {
-		pr_err("unable to acquire memory-region of heap %d\n", heap_mem_region_name);
+		pr_err("unable to acquire memory-region of heap %s\n", heap_mem_region_name);
 		return -EINVAL;
 	}
 
 	heap_pa = rmem->base;
 	heap_size = (size_t)rmem->size;
 
-	pr_debug("get heap %d info: shmbridge created\n", heap_mem_region_name);
+	pr_debug("get heap %s info: shmbridge created\n", heap_mem_region_name);
 	return qtee_shmbridge_register(heap_pa,
 			heap_size, ns_vmids, ns_vm_perms, 1,
 			PERM_READ | PERM_WRITE, handle);

@@ -3,9 +3,8 @@
  * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
-#include <include/linux/smcinvoke.h>
+#include "smcinvoke_object.h"
 #include <include/linux/IClientEnv.h>
-#include <include/linux/smcinvoke_object.h>
 #include <include/smci/uid/CAppClient.h>
 #include <include/smci/uid/CAppLoader.h>
 #include <include/smci/interface/IAppClient.h>
@@ -46,7 +45,7 @@ static int hdcp1_key_set(struct hdcp1_smcinvoke_handle *handle,
 	uint8_t *ksvRes = NULL;
 	size_t ksvResLen = 0;
 
-	ksvRes = kmalloc(HDCP1_AKSV_SIZE, GFP_KERNEL);
+	ksvRes = kzalloc(HDCP1_AKSV_SIZE, GFP_KERNEL);
 	if (!ksvRes)
 		return -EINVAL;
 
