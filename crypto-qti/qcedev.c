@@ -26,6 +26,7 @@
 #include "linux/qcedev.h"
 #include <linux/interconnect.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 
 #include <crypto/hash.h>
 #include "qcedevi.h"
@@ -396,7 +397,7 @@ void qcedev_cipher_req_cb(void *cookie, unsigned char *icv,
 		return;
 	qcedev_areq = podev->active_command;
 
-	if (iv)
+	if (iv && qcedev_areq)
 		memcpy(&qcedev_areq->cipher_op_req.iv[0], iv,
 					qcedev_areq->cipher_op_req.ivlen);
 	tasklet_schedule(&podev->done_tasklet);
@@ -524,7 +525,7 @@ void qcedev_offload_cipher_req_cb(void *cookie, unsigned char *icv,
 		return;
 	qcedev_areq = podev->active_command;
 
-	if (iv)
+	if (iv && qcedev_areq)
 		memcpy(&qcedev_areq->offload_cipher_op_req.iv[0], iv,
 			qcedev_areq->offload_cipher_op_req.ivlen);
 
@@ -2519,7 +2520,11 @@ static int qcedev_probe_device(struct platform_device *pdev)
 		return rc;
 	}
 
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	driver_class = class_create(QCEDEV_DEV);
+#else
 	driver_class = class_create(THIS_MODULE, QCEDEV_DEV);
+#endif
 	if (IS_ERR(driver_class)) {
 		rc = -ENOMEM;
 		pr_err("class_create failed %d\n", rc);

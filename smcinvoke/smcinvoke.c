@@ -25,7 +25,12 @@
 #include <linux/mem-buf.h>
 #include <linux/of_platform.h>
 #include <linux/firmware.h>
+#include <linux/version.h>
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+#include <linux/firmware/qcom/qcom_scm.h>
+#else
 #include <linux/qcom_scm.h>
+#endif
 #include <linux/freezer.h>
 #include <linux/ratelimit.h>
 #include <asm/cacheflush.h>
@@ -243,7 +248,7 @@ struct smcinvoke_msg_hdr {
 struct smcinvoke_tzcb_req {
 	int32_t result;
 	struct smcinvoke_msg_hdr hdr;
-	union smcinvoke_tz_args args[0];
+	union smcinvoke_tz_args args[];
 };
 
 struct smcinvoke_file_data {
@@ -258,7 +263,7 @@ struct smcinvoke_piggyback_msg {
 	uint32_t version;
 	uint32_t op;
 	uint32_t counts;
-	int32_t objs[0];
+	int32_t objs[];
 };
 
 /* Mapped memory object data
@@ -3170,7 +3175,11 @@ static int smcinvoke_probe(struct platform_device *pdev)
 		pr_err("chrdev_region failed %d for %s\n", rc, SMCINVOKE_DEV);
 		goto exit_destroy_wkthread;
 	}
+#if  (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	driver_class = class_create(SMCINVOKE_DEV);
+#else
 	driver_class = class_create(THIS_MODULE, SMCINVOKE_DEV);
+#endif
 	if (IS_ERR(driver_class)) {
 		rc = -ENOMEM;
 		pr_err("class_create failed %d\n", rc);
