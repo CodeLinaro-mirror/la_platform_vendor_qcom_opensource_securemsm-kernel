@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2011-2013, 2015, 2017-2021 The Linux Foundation. All rights
  * reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -24,6 +24,7 @@
 #include <crypto/internal/rng.h>
 #include <linux/interconnect.h>
 #include <linux/sched/signal.h>
+#include <linux/version.h>
 
 #define DRIVER_NAME "msm_rng"
 
@@ -325,7 +326,11 @@ static int msm_rng_probe(struct platform_device *pdev)
 		goto err_reg_chrdev;
 	}
 
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	msm_rng_class = class_create("msm-rng");
+#else
 	msm_rng_class = class_create(THIS_MODULE, "msm-rng");
+#endif
 	if (IS_ERR(msm_rng_class)) {
 		pr_err("class_create failed\n");
 		error = PTR_ERR(msm_rng_class);
@@ -367,6 +372,9 @@ static int msm_rng_remove(struct platform_device *pdev)
 {
 	struct msm_rng_device *msm_rng_dev = platform_get_drvdata(pdev);
 
+	cdev_del(&msm_rng_cdev);
+	device_destroy(msm_rng_class, MKDEV(QRNG_IOC_MAGIC, 0));
+	class_destroy(msm_rng_class);
 	unregister_chrdev(QRNG_IOC_MAGIC, DRIVER_NAME);
 	hwrng_unregister(&msm_rng);
 	if (msm_rng_dev->prng_clk)
