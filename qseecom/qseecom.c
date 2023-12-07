@@ -1563,7 +1563,7 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 		return -EINVAL;
 	}
 
-	ret = copy_from_user(&rcvd_lstnr, argp, sizeof(rcvd_lstnr));
+	K_COPY_FROM_USER(ret, &rcvd_lstnr, argp, sizeof(rcvd_lstnr));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -9568,8 +9568,7 @@ static int qseecom_reboot_worker(struct notifier_block *nb, unsigned long val, v
          */
 	list_for_each_entry(entry,
 			&qseecom.registered_listener_list_head, list) {
-		if (entry)
-			entry->abort = 1;
+		entry->abort = 1;
 	}
 
 	/* stop CA thread waiting for listener response */
