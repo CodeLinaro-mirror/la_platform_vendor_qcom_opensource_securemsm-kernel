@@ -9924,12 +9924,12 @@ static int qseecom_probe(struct platform_device *pdev)
 	rc = qseecom_register_shmbridge(pdev);
 	if (rc)
 		return rc;
+	rc = qseecom_init_control();
+	if (rc)
+		goto exit_unregister_bridge;
 	rc = qseecom_init_dev(pdev);
 	if (rc)
 		goto exit_unregister_bridge;
-	rc = qseecom_init_control();
-	if (rc)
-		goto exit_deinit_dev;
 	rc = qseecom_parse_dt(pdev);
 	if (rc)
 		goto exit_deinit_dev;
