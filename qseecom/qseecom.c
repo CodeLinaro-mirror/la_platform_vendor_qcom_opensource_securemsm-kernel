@@ -145,6 +145,9 @@
 		}\
 	} while (0)
 
+#define DS_ENTERED 0x1
+#define DS_EXITED  0x0
+
 enum qseecom_clk_definitions {
 	CLK_DFAB = 0,
 	CLK_SFPB,
@@ -373,6 +376,7 @@ struct qseecom_control {
 	struct notifier_block reboot_nb;
 	wait_queue_head_t unload_app_kthread_wq;
 	atomic_t unload_app_kthread_state;
+	uint32_t qseecom_ds_state;
 };
 
 struct qseecom_unload_app_pending_list {
@@ -413,7 +417,7 @@ struct qseecom_client_handle {
 
 struct qseecom_listener_handle {
 	u32               id;
-	bool              unregister_pending;
+	bool              register_pending;
 	bool              release_called;
 };
 
@@ -489,6 +493,11 @@ static int qseecom_query_ce_info(struct qseecom_dev_handle *data,
 						void __user *argp);
 static int __qseecom_unload_app(struct qseecom_dev_handle *data,
 				uint32_t app_id);
+
+#ifdef ENABLE_DSQB_SYSFS_NODE
+int qseecom_set_ds_state(uint32_t state);
+int dsqb_sysfs_init(void);
+#endif
 
 static int __maybe_unused get_qseecom_keymaster_status(char *str)
 {
@@ -1548,7 +1557,12 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	struct qseecom_registered_listener_list *new_entry;
 	struct qseecom_registered_listener_list *ptr_svc;
 
-	ret = copy_from_user(&rcvd_lstnr, argp, sizeof(rcvd_lstnr));
+	if (data->listener.register_pending) {
+		pr_err("Already a listner registration is in process on this FD\n");
+		return -EINVAL;
+	}
+
+	K_COPY_FROM_USER(ret, &rcvd_lstnr, argp, sizeof(rcvd_lstnr));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -1556,6 +1570,12 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	if (!access_ok((void __user *)rcvd_lstnr.virt_sb_base,
 			rcvd_lstnr.sb_size))
 		return -EFAULT;
+
+	ptr_svc = __qseecom_find_svc(data->listener.id);
+	if (ptr_svc) {
+		pr_err("Already a listener registered on this data: lid=%d\n", data->listener.id);
+		return -EINVAL;
+	}
 
 	ptr_svc = __qseecom_find_svc(rcvd_lstnr.listener_id);
 	if (ptr_svc) {
@@ -1600,13 +1620,16 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 	new_entry->svc.listener_id = rcvd_lstnr.listener_id;
 	new_entry->sb_length = rcvd_lstnr.sb_size;
 	new_entry->user_virt_sb_base = rcvd_lstnr.virt_sb_base;
+	data->listener.register_pending = true;
 	if (__qseecom_set_sb_memory(new_entry, data, &rcvd_lstnr)) {
 		pr_err("qseecom_set_sb_memory failed for listener %d, size %d\n",
 				rcvd_lstnr.listener_id, rcvd_lstnr.sb_size);
 		__qseecom_free_tzbuf(&new_entry->sglistinfo_shm);
 		kfree_sensitive(new_entry);
+		data->listener.register_pending = false;
 		return -ENOMEM;
 	}
+	data->listener.register_pending = false;
 
 	init_waitqueue_head(&new_entry->rcv_req_wq);
 	init_waitqueue_head(&new_entry->listener_block_app_wq);
@@ -3139,7 +3162,8 @@ static int qseecom_unload_app(struct qseecom_dev_handle *data,
 	pr_debug("unload app %d(%s), app_crash flag %d\n", data->client.app_id,
 			data->client.app_name, app_crash);
 
-	if (!memcmp(data->client.app_name, "keymaste", strlen("keymaste"))) {
+	if (!memcmp(data->client.app_name, "keymaste", strlen("keymaste"))
+		&& !(qseecom.qseecom_ds_state == DS_ENTERED)) {
 		pr_debug("Do not unload keymaster app from tz\n");
 		goto unload_exit;
 	}
@@ -3178,7 +3202,7 @@ static int qseecom_unload_app(struct qseecom_dev_handle *data,
 		goto unload_exit;
 	}
 
-	if (!ptr_app->ref_cnt) {
+	if (!ptr_app->ref_cnt || (qseecom.qseecom_ds_state == DS_ENTERED)) {
 		ret = __qseecom_unload_app(data, data->client.app_id);
 		if (ret == -EBUSY) {
 			/*
@@ -7803,6 +7827,11 @@ long qseecom_ioctl(struct file *file,
 		pr_err("Aborting qseecom driver\n");
 		return -ENODEV;
 	}
+        if (atomic_read(&qseecom.qseecom_state) != QSEECOM_STATE_READY) {
+                pr_err("Not allowed to be called in %d state\n",
+                                atomic_read(&qseecom.qseecom_state));
+                return -EPERM;
+        }
 	if (cmd != QSEECOM_IOCTL_RECEIVE_REQ &&
 		cmd != QSEECOM_IOCTL_SEND_RESP_REQ &&
 		cmd != QSEECOM_IOCTL_SEND_MODFD_RESP &&
@@ -9350,6 +9379,24 @@ out:
 	return ret;
 }
 
+/* Set Deep Sleep state. By default DS-state is DS_EXITED
+ * If DS State will be set as DS_ENTERERD, then Keymatser TA can be unloaded.
+ */
+#ifdef ENABLE_DSQB_SYSFS_NODE
+int qseecom_set_ds_state(uint32_t state)
+{
+	int ret = 0;
+
+	if (state == DS_ENTERED || state == DS_EXITED) {
+		qseecom.qseecom_ds_state = state;
+	} else {
+		qseecom.qseecom_ds_state = -EINVAL;
+		pr_err("Invalid deep sleep state = %d\n", state);
+		ret = -EINVAL;
+	}
+	return ret;
+}
+#endif
 /*
  * Check whitelist feature, and if TZ feature version is < 1.0.0,
  * then whitelist feature is not supported.
@@ -9530,8 +9577,7 @@ static int qseecom_reboot_worker(struct notifier_block *nb, unsigned long val, v
          */
 	list_for_each_entry(entry,
 			&qseecom.registered_listener_list_head, list) {
-		if (entry)
-			entry->abort = 1;
+		entry->abort = 1;
 	}
 
 	/* stop CA thread waiting for listener response */
@@ -9912,6 +9958,12 @@ static int qseecom_probe(struct platform_device *pdev)
 	if (rc)
 		goto exit_deinit_bus;
 
+#ifdef ENABLE_DSQB_SYSFS_NODE
+	rc = dsqb_sysfs_init();
+	if (rc)
+		goto exit_deinit_bus;
+#endif
+
 #if IS_ENABLED(CONFIG_QSEECOM_PROXY)
 	/*If the api fails to get the func ops, print the error and continue
 	* Do not treat it as fatal*/
@@ -9919,6 +9971,7 @@ static int qseecom_probe(struct platform_device *pdev)
 	if (rc)
 		pr_err("failed to provide qseecom ops %d", rc);
 #endif
+	qseecom.qseecom_ds_state = DS_EXITED;
 	atomic_set(&qseecom.qseecom_state, QSEECOM_STATE_READY);
 	return 0;
 
@@ -9982,7 +10035,7 @@ static int qseecom_remove(struct platform_device *pdev)
 	return ret;
 }
 
-static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
+static int qseecom_suspend(struct device *dev)
 {
 	int ret = 0;
 	struct qseecom_clk *qclk;
@@ -10023,7 +10076,7 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 
-static int qseecom_resume(struct platform_device *pdev)
+static int qseecom_resume(struct device *dev)
 {
 	int mode = 0;
 	int ret = 0;
@@ -10110,13 +10163,17 @@ static const struct of_device_id qseecom_match[] = {
 	{}
 };
 
+static const struct dev_pm_ops qseecom_pm_ops = {
+	.suspend_late = qseecom_suspend,
+	.resume_early = qseecom_resume,
+};
+
 static struct platform_driver qseecom_plat_driver = {
 	.probe = qseecom_probe,
 	.remove = qseecom_remove,
-	.suspend = qseecom_suspend,
-	.resume = qseecom_resume,
 	.driver = {
 		.name = "qseecom",
+		.pm = &qseecom_pm_ops,
 		.of_match_table = qseecom_match,
 	},
 };
