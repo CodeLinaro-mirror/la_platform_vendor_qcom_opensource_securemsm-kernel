@@ -8518,19 +8518,8 @@ long qseecom_ioctl(struct file *file,
 		break;
 	}
 	case QSEECOM_IOCTL_SET_ICE_INFO: {
-#if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
-		struct qseecom_ice_data_t ice_data;
-
-		ret = copy_from_user(&ice_data, argp, sizeof(ice_data));
-		if (ret) {
-			pr_err("copy_from_user failed\n");
-			return -EFAULT;
-		}
-		crypto_qti_ice_set_fde_flag(ice_data.flag);
-#else
 		pr_info("SET_ICE_INFO is reduntant call,return success for backwards compatibility\n");
 		ret = 0;
-#endif
 		break;
 	}
 	case QSEECOM_IOCTL_FBE_CLEAR_KEY: {
