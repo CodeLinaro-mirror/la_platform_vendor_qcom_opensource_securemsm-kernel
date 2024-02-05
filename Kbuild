@@ -17,6 +17,13 @@ else
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom_compat.h
 endif
 
+ifeq ($(CONFIG_ARCH_QTI_VM), y)
+    ifneq (, $(filter y, $(CONFIG_ARCH_LEMANS)))
+        include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qrng.conf
+        LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qrng.h
+    endif
+endif
+
 obj-$(CONFIG_QSEECOM) += qseecom_dlkm.o
 qseecom_dlkm-objs := qseecom/qseecom.o
 
@@ -34,6 +41,7 @@ qce50_dlkm-objs := crypto-qti/qce50.o
 
 obj-$(CONFIG_CRYPTO_DEV_QCEDEV) += qcedev-mod_dlkm.o
 qcedev-mod_dlkm-objs := crypto-qti/qcedev.o crypto-qti/qcedev_smmu.o
+qcedev-mod_dlkm-$(CONFIG_COMPAT) += crypto-qti/compat_qcedev.o
 
 obj-$(CONFIG_CRYPTO_DEV_QCRYPTO) += qcrypto-msm_dlkm.o
 qcrypto-msm_dlkm-objs := crypto-qti/qcrypto.o
@@ -56,3 +64,15 @@ ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN))
     smmu_proxy_dlkm-objs += smmu-proxy/qti-smmu-proxy-tvm.o
     endif
 endif
+
+#Enable QCE Dev Frontend if CONFIG_ARCH_LEMANS is set to y
+#ifeq ($(CONFIG_ARCH_LEMANS), y)
+ifeq ($(CONFIG_QTI_QUIN_GVM), y)
+
+include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
+LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
+
+obj-$(CONFIG_QCEDEV_FE) += qcedev_fe_dlkm.o
+qcedev_fe_dlkm-objs := qcedev_fe/qcedev_fe.o qcedev_fe/qcedev_smmu.o
+endif #CONFIG_QTI_QUIN_GVM
+#endif #CONFIG_ARCH_LEMANS
