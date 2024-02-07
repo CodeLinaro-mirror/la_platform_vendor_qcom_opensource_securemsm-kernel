@@ -1,8 +1,8 @@
 load(":securemsm_kernel.bzl", "define_consolidate_gki_modules")
 
-def define_monaco():
+def define_pitti():
     define_consolidate_gki_modules(
-        target = "monaco",
+        target = "pitti",
         modules = [
             "smcinvoke_dlkm",
             "tz_log_dlkm",
@@ -11,10 +11,11 @@ def define_monaco():
             "qcedev-mod_dlkm",
             "qrng_dlkm",
             "qcrypto-msm_dlkm",
+            "smmu_proxy_dlkm",
             "qseecom_dlkm"
         ],
         extra_options = [
             "CONFIG_QCOM_SMCINVOKE",
-            "CONFIG_QSEECOM",
+            "CONFIG_QSEECOM_COMPAT",
         ],
     )
