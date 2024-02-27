@@ -23,10 +23,12 @@ PRODUCT_PACKAGES += qce50_dlkm.ko
 PRODUCT_PACKAGES += qcrypto-msm_dlkm.ko
 PRODUCT_PACKAGES += hdcp_qseecom_dlkm.ko
 
+ifneq (true, $(TARGET_ENABLE_QSEECOM_COMPAT))
 #Enable Qseecom if TARGET_ENABLE_QSEECOM or TARGET_BOARD_AUTO is set to true
 ifneq (, $(filter true, $(TARGET_ENABLE_QSEECOM) $(TARGET_BOARD_AUTO)))
 PRODUCT_PACKAGES += qseecom_dlkm.ko
 endif #TARGET_ENABLE_QSEECOM OR TARGET_BOARD_AUTO
+endif
 endif #TARGET_USES_GY
 PRODUCT_PACKAGES += smcinvoke_dlkm.ko
 PRODUCT_PACKAGES += qrng_dlkm.ko
