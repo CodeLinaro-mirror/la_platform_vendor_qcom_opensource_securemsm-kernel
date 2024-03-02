@@ -3,6 +3,7 @@
  * QTI Crypto Engine driver.
  *
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QCE50: %s: " fmt, __func__
@@ -21,13 +22,12 @@
 #include <linux/delay.h>
 #include <linux/crypto.h>
 #include <linux/bitops.h>
-#include "linux/qcrypto.h"
 #include <crypto/hash.h>
 #include <crypto/sha1.h>
 #include <soc/qcom/socinfo.h>
-#include <linux/dma-iommu.h>
 #include <linux/iommu.h>
 
+#include "qcrypto.h"
 #include "qce.h"
 #include "qce50.h"
 #include "qcryptohw_50.h"
@@ -181,6 +181,7 @@ struct qce_device {
 	bool no_clock_support;
 	bool kernel_pipes_support;
 	bool offload_pipes_support;
+	bool no_clock_gating;
 };
 
 static void print_notify_debug(struct sps_event_notify *notify);
@@ -206,8 +207,9 @@ static uint32_t _std_init_vector_sha256[] = {
  */
 static bool is_offload_op(int op)
 {
-	return (op == QCE_OFFLOAD_HLOS_HLOS || op == QCE_OFFLOAD_HLOS_CPB ||
-		op == QCE_OFFLOAD_CPB_HLOS);
+	return (op == QCE_OFFLOAD_HLOS_HLOS || op == QCE_OFFLOAD_HLOS_HLOS_1 ||
+		op == QCE_OFFLOAD_CPB_HLOS || op == QCE_OFFLOAD_HLOS_CPB ||
+		op == QCE_OFFLOAD_HLOS_CPB_1);
 }
 
 static uint32_t qce_get_config_be(struct qce_device *pce_dev,
@@ -297,28 +299,8 @@ static int qce_crypto_config(struct qce_device *pce_dev,
 {
 	uint32_t config_be = 0;
 
-	switch (offload_op) {
-	case QCE_OFFLOAD_NONE:
-		config_be = qce_get_config_be(pce_dev,
-		pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_NONE]);
-		break;
-	case QCE_OFFLOAD_HLOS_HLOS:
-		config_be = qce_get_config_be(pce_dev,
-		pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_HLOS_HLOS]);
-		break;
-	case QCE_OFFLOAD_HLOS_CPB:
-		config_be = qce_get_config_be(pce_dev,
-		pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_HLOS_CPB]);
-		break;
-	case QCE_OFFLOAD_CPB_HLOS:
-		config_be = qce_get_config_be(pce_dev,
-		pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_CPB_HLOS]);
-		break;
-	default:
-		pr_err("%s: Valid pipe config not set, offload op = %d\n",
-					__func__, offload_op);
-		return -EINVAL;
-	}
+	config_be = qce_get_config_be(pce_dev,
+		    pce_dev->ce_bam_info.pipe_pair_index[offload_op]);
 
 	pce_dev->reg.crypto_cfg_be = config_be;
 	pce_dev->reg.crypto_cfg_le = (config_be |
@@ -328,7 +310,14 @@ static int qce_crypto_config(struct qce_device *pce_dev,
 
 static void qce_enable_clock_gating(struct qce_device *pce_dev)
 {
-	/* This feature might cause some HW issues, noop till resolved. */
+	if (pce_dev->no_clock_gating) {
+		pr_info("Clock gating is either not supported or disabled.\n");
+		return;
+	}
+	if (pce_dev->ce_bam_info.major_version == 5 &&
+		pce_dev->ce_bam_info.minor_version >= 9) {
+		writel(CRYPTO_AUTO_SHUTDOWN_EN,	pce_dev->iobase + CRYPTO_PWR_CTRL);
+	}
 	return;
 }
 
@@ -410,6 +399,9 @@ static int qce_dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 	int i;
 
 	for (i = 0; i < nents; ++i) {
+		/* sg maybe NULL that be referenced */
+		if (!sg)
+			return -EINVAL;
 		dma_map_sg(dev, sg, 1, direction);
 		sg = sg_next(sg);
 	}
@@ -423,6 +415,9 @@ static int qce_dma_unmap_sg(struct device *dev, struct scatterlist *sg,
 	int i;
 
 	for (i = 0; i < nents; ++i) {
+		/* sg maybe NULL that be referenced */
+		if (!sg)
+			return -EINVAL;
 		dma_unmap_sg(dev, sg, 1, direction);
 		sg = sg_next(sg);
 	}
@@ -434,6 +429,7 @@ static int _probe_ce_engine(struct qce_device *pce_dev)
 {
 	unsigned int rev;
 	unsigned int maj_rev, min_rev, step_rev;
+	int i = 0;
 
 	rev = readl_relaxed(pce_dev->iobase + CRYPTO_VERSION_REG);
 	/*
@@ -480,12 +476,17 @@ static int _probe_ce_engine(struct qce_device *pce_dev)
 
 	pce_dev->ce_bam_info.ce_burst_size = MAX_CE_BAM_BURST_SIZE;
 
-	dev_dbg(pce_dev->pdev, "CE device = %#x IO base, CE = %pK Consumer (IN) PIPE %d,\nProducer (OUT) PIPE %d IO base BAM = %pK\nBAM IRQ %d Engines Availability = %#x\n",
+	dev_dbg(pce_dev->pdev, "CE device = %#x IO base, CE = %pK, IO base BAM = %pK\nBAM IRQ %d Engines Availability = %#x\n",
 			pce_dev->ce_bam_info.ce_device, pce_dev->iobase,
-			pce_dev->ce_bam_info.dest_pipe_index,
-			pce_dev->ce_bam_info.src_pipe_index,
 			pce_dev->ce_bam_info.bam_iobase,
 			pce_dev->ce_bam_info.bam_irq, pce_dev->engines_avail);
+
+	for (i = 0; i < QCE_OFFLOAD_OPER_LAST; i++) {
+		dev_dbg(pce_dev->pdev, "Consumer pipe IN [%d] = %d, Producer Pipe OUT [%d] = %d\n",
+				i, pce_dev->ce_bam_info.src_pipe_index[i],
+				i, pce_dev->ce_bam_info.dest_pipe_index[i]);
+	}
+
 	return 0;
 };
 
@@ -2455,8 +2456,6 @@ int qce_manage_timeout(void *handle, int req_info)
 	if (_qce_unlock_other_pipes(pce_dev, req_info))
 		pr_err("%s: fail unlock other pipes\n", __func__);
 
-	qce_enable_clock_gating(pce_dev);
-
 	if (!atomic_read(&preq_info->in_use)) {
 		pr_err("request information %d already done\n", req_info);
 		return -ENXIO;
@@ -3033,8 +3032,6 @@ static int _qce_sps_transfer(struct qce_device *pce_dev, int req_info)
 		pr_err("sps_xfr() fail (producer pipe=0x%lx) rc = %d\n",
 			(uintptr_t)pce_dev->ce_bam_info.producer[op].pipe, rc);
 ret:
-	if (rc)
-		_qce_dump_descr_fifos(pce_dev, req_info);
 	return rc;
 }
 
@@ -3385,6 +3382,8 @@ static int qce_sps_init(struct qce_device *pce_dev)
 			continue;
 		else if ((i > 0) && !(pce_dev->offload_pipes_support))
 			break;
+		if (!pce_dev->ce_bam_info.pipe_pair_index[i])
+			continue;
 		rc = qce_sps_init_ep_conn(pce_dev,
 			&pce_dev->ce_bam_info.producer[i], i, true);
 		if (rc)
@@ -3633,6 +3632,8 @@ static void qce_sps_exit(struct qce_device *pce_dev)
 			continue;
 		else if ((i > 0) && !(pce_dev->offload_pipes_support))
 			break;
+		if (!pce_dev->ce_bam_info.pipe_pair_index[i])
+			continue;
 		qce_sps_exit_ep_conn(pce_dev,
 				&pce_dev->ce_bam_info.consumer[i]);
 		qce_sps_exit_ep_conn(pce_dev,
@@ -5375,6 +5376,8 @@ static int _qce_suspend(void *handle)
 			continue;
 		else if ((i > 0) && !(pce_dev->offload_pipes_support))
 			break;
+		if (!pce_dev->ce_bam_info.pipe_pair_index[i])
+			continue;
 		sps_pipe_info = pce_dev->ce_bam_info.consumer[i].pipe;
 		sps_disconnect(sps_pipe_info);
 
@@ -5392,16 +5395,17 @@ static int _qce_resume(void *handle)
 	struct sps_connect *sps_connect_info;
 	int rc, i;
 
-        rc = -ENODEV;
-
+	rc = -ENODEV;
 	if (handle == NULL)
-		return -ENODEV;
+		return rc;
 
 	for (i = 0; i < QCE_OFFLOAD_OPER_LAST; i++) {
 		if (i == QCE_OFFLOAD_NONE && !(pce_dev->kernel_pipes_support))
 			continue;
 		else if ((i > 0) && !(pce_dev->offload_pipes_support))
 			break;
+		if (!pce_dev->ce_bam_info.pipe_pair_index[i])
+			continue;
 		sps_pipe_info = pce_dev->ce_bam_info.consumer[i].pipe;
 		sps_connect_info = &pce_dev->ce_bam_info.consumer[i].connect;
 		memset(sps_connect_info->desc.base, 0x00,
@@ -6269,6 +6273,9 @@ static int __qce_get_device_tree_data(struct platform_device *pdev,
 	pce_dev->request_bw_before_clk = of_property_read_bool(
 		(&pdev->dev)->of_node, "qcom,request-bw-before-clk");
 
+	for (i = 0; i < QCE_OFFLOAD_OPER_LAST; i++)
+		pce_dev->ce_bam_info.pipe_pair_index[i] = 0;
+
 	pce_dev->kernel_pipes_support = true;
 	if (of_property_read_u32((&pdev->dev)->of_node,
 				"qcom,bam-pipe-pair",
@@ -6288,6 +6295,7 @@ static int __qce_get_device_tree_data(struct platform_device *pdev,
 			pr_err("Fail to get bam offload cpb-hlos pipe pair info.\n");
 			return -EINVAL;
 		}
+
 		if (of_property_read_u32((&pdev->dev)->of_node,
 			"qcom,bam-pipe-offload-hlos-hlos",
 		&pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_HLOS_HLOS])) {
@@ -6295,10 +6303,21 @@ static int __qce_get_device_tree_data(struct platform_device *pdev,
 			return -EINVAL;
 		}
 		if (of_property_read_u32((&pdev->dev)->of_node,
+			"qcom,bam-pipe-offload-hlos-hlos-1",
+		&pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_HLOS_HLOS_1])) {
+			pr_info("No bam offload hlos-hlos-1 info.\n");
+		}
+
+		if (of_property_read_u32((&pdev->dev)->of_node,
 			"qcom,bam-pipe-offload-hlos-cpb",
 		&pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_HLOS_CPB])) {
 			pr_err("Fail to get bam offload hlos-cpb info\n");
 			return -EINVAL;
+		}
+		if (of_property_read_u32((&pdev->dev)->of_node,
+			"qcom,bam-pipe-offload-hlos-cpb-1",
+		&pce_dev->ce_bam_info.pipe_pair_index[QCE_OFFLOAD_HLOS_CPB_1])) {
+			pr_info("No bam offload hlos-cpb-1 info\n");
 		}
 	}
 
@@ -6332,6 +6351,9 @@ static int __qce_get_device_tree_data(struct platform_device *pdev,
 
 	pce_dev->no_clock_support = of_property_read_bool((&pdev->dev)->of_node,
 					"qcom,no-clock-support");
+
+	pce_dev->no_clock_gating = of_property_read_bool((&pdev->dev)->of_node,
+					"qcom,no-clk-gating");
 
 	for (i = 0; i < QCE_OFFLOAD_OPER_LAST; i++) {
 		/* Source/destination pipes for all usecases */
@@ -6367,10 +6389,8 @@ static int __qce_get_device_tree_data(struct platform_device *pdev,
 		goto err_getting_bam_info;
 	}
 
-	resource  = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (resource) {
-		pce_dev->ce_bam_info.bam_irq = resource->start;
-	} else {
+	pce_dev->ce_bam_info.bam_irq = platform_get_irq(pdev,0);
+	if (pce_dev->ce_bam_info.bam_irq < 0) {
 		pr_err("CRYPTO BAM IRQ unavailable.\n");
 		goto err_dev;
 	}

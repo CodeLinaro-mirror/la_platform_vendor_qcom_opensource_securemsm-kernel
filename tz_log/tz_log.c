@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:[%s][%d]: " fmt, KBUILD_MODNAME, __func__, __LINE__
@@ -20,13 +20,19 @@
 #include <linux/uaccess.h>
 #include <linux/of.h>
 #include <linux/dma-buf.h>
+#include <linux/version.h>
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+#include <linux/firmware/qcom/qcom_scm.h>
+#else
 #include <linux/qcom_scm.h>
-#include <soc/qcom/qseecomi.h>
+#endif
 #include <linux/qtee_shmbridge.h>
 #include <linux/proc_fs.h>
 #if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
 #include <linux/tmelog.h>
 #endif
+
+#include "misc/qseecomi.h"
 
 /* QSEE_LOG_BUF_SIZE = 32K */
 #define QSEE_LOG_BUF_SIZE 0x8000
@@ -1231,7 +1237,7 @@ static int _disp_tme_log_stats(size_t count)
 
 	log_start.size -= log_len;
 	log_start.offset += log_len;
-	pr_debug("log_len: %d, log_start.offset: %#x, log_start.size: %#x\n",
+	pr_debug("log_len: %d, log_start.offset: %#x, log_start.size: %zu\n",
 			log_len, log_start.offset, log_start.size);
 
 	if (log_start.size)
@@ -1356,7 +1362,7 @@ static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
 	stat->display_offset += ret;
 	stat->display_len -= ret;
 	pr_debug("ret = %d, offset = %d\n", ret, (int)(*offp));
-	pr_debug("display_len = %d, offset = %d\n",
+	pr_debug("display_len = %lu, offset = %lu\n",
 			stat->display_len, stat->display_offset);
 	return ret;
 }
@@ -1384,7 +1390,13 @@ static ssize_t tzdbg_fs_read(struct file *file, char __user *buf,
 
 static int tzdbg_procfs_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, NULL, PDE_DATA(inode));
+
+#if (LINUX_VERSION_CODE <= KERNEL_VERSION(6,0,0))
+       return single_open(file, NULL, PDE_DATA(inode));
+#else
+       return single_open(file, NULL, pde_data(inode));
+#endif
+
 }
 
 static int tzdbg_procfs_release(struct inode *inode, struct file *file)
@@ -1392,11 +1404,19 @@ static int tzdbg_procfs_release(struct inode *inode, struct file *file)
 	return single_release(inode, file);
 }
 
+static loff_t tzdbg_procfs_lseek(struct file *file, loff_t offset, int whence)
+{
+	pr_warn("%s: Operation not supported\n", __func__);
+	return -EOPNOTSUPP;
+}
+
 struct proc_ops tzdbg_fops = {
 	.proc_flags   = PROC_ENTRY_PERMANENT,
 	.proc_read    = tzdbg_fs_read,
 	.proc_open    = tzdbg_procfs_open,
 	.proc_release = tzdbg_procfs_release,
+/* mandatory unless nonseekable_open() or equivalent is used */
+	.proc_lseek   = tzdbg_procfs_lseek,
 };
 
 static int tzdbg_init_tme_log(struct platform_device *pdev, void __iomem *virt_iobase)
@@ -1471,7 +1491,7 @@ static int tzdbg_register_qsee_log_buf(struct platform_device *pdev)
 	ret = qcom_scm_register_qsee_log_buf(coh_pmem, qseelog_buf_size);
 	if (ret != QSEOS_RESULT_SUCCESS) {
 		pr_err(
-		"%s: scm_call to register log buf failed, resp result =%lld\n",
+		"%s: scm_call to register log buf failed, resp result =%d\n",
 		__func__, ret);
 		goto exit_dereg_bridge;
 	}
@@ -1689,7 +1709,7 @@ static int __update_rmlog_base(struct platform_device *pdev,
 					rmlog_address,
 					rmlog_size);
 	if (!tzdbg.rmlog_virt_iobase) {
-		dev_err(&pdev->dev, "ERROR could not ioremap: start=%pr, len=%u\n",
+		dev_err(&pdev->dev, "ERROR could not ioremap: start=%u, len=%u\n",
 			rmlog_address, tzdbg.rmlog_rw_buf_size);
 		return -ENXIO;
 	}
@@ -1721,7 +1741,7 @@ static int tzdbg_get_tz_version(void)
 				__func__, ret);
 		return ret;
 	}
-	pr_warn("tz diag version is %x\n", version);
+	pr_warn("tz diag version is %llu\n", version);
 	tzdbg.tz_diag_major_version =
 		((version >> TZBSP_FVER_MAJOR_SHIFT) & TZBSP_FVER_MAJOR_MINOR_MASK);
 	tzdbg.tz_diag_minor_version =
@@ -1755,7 +1775,7 @@ static void tzdbg_query_encrypted_log(void)
 			pr_err("scm_call QUERY_ENCR_LOG_FEATURE failed ret %d\n", ret);
 		tzdbg.is_encrypted_log_enabled = false;
 	} else {
-		pr_warn("encrypted qseelog enabled is %d\n", enabled);
+		pr_warn("encrypted qseelog enabled is %llu\n", enabled);
 		tzdbg.is_encrypted_log_enabled = enabled;
 	}
 }
@@ -1889,7 +1909,7 @@ static int tz_log_probe(struct platform_device *pdev)
 	ret = tzdbg_allocate_encrypted_log_buf(pdev);
 	if (ret) {
 		dev_err(&pdev->dev,
-			"Failed to allocate encrypted log buffer\n",
+			" %s: Failed to allocate encrypted log buffer\n",
 			__func__);
 		goto exit_free_qsee_log_buf;
 	}

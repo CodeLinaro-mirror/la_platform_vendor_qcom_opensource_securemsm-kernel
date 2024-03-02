@@ -3,7 +3,7 @@
  * QTI CE device driver.
  *
  * Copyright (c) 2010-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/mman.h>
@@ -23,20 +23,19 @@
 #include <linux/debugfs.h>
 #include <linux/scatterlist.h>
 #include <linux/crypto.h>
-#include "linux/platform_data/qcom_crypto_device.h"
 #include "linux/qcedev.h"
 #include <linux/interconnect.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 
 #include <crypto/hash.h>
 #include "qcedevi.h"
 #include "qce.h"
 #include "qcedev_smmu.h"
+#include "qcom_crypto_device.h"
 #if IS_ENABLED(CONFIG_COMPAT)
 #include "compat_qcedev.h"
 #endif
-
-#include <linux/compat.h>
 
 #define CACHE_LINE_SIZE 64
 #define CE_SHA_BLOCK_SIZE SHA256_BLOCK_SIZE
@@ -51,7 +50,7 @@
  * This is temporary, and we can use the 1500 value once the
  * core irqs are enabled.
  */
-#define MAX_OFFLOAD_CRYPTO_WAIT_TIME 20
+#define MAX_OFFLOAD_CRYPTO_WAIT_TIME 50
 
 #define MAX_REQUEST_TIME 5000
 
@@ -101,19 +100,21 @@ MODULE_DEVICE_TABLE(of, qcedev_match);
 			err = copy_from_user((dst),\
 			(void const __user *)(src),\
 			(size));\
-		else\
+		else {\
 			memmove((dst), (void *)(src), (size));\
 			err = 0;\
+		} \
 	} while (0)
 
 #define K_COPY_TO_USER(err, dst, src, size) \
 	do {\
-		if(!(is_compat_task()))\
+		if (!(is_compat_task()))\
 			err = copy_to_user((void __user *)(dst),\
 			(src), (size));\
-		else\
+		else {\
 			memmove((void *)(dst), (src), (size));\
 			err = 0;\
+		} \
 	} while (0)
 
 static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
@@ -209,7 +210,7 @@ static void qcedev_ce_high_bw_req(struct qcedev_control *podev,
 {
 	int ret = 0;
 
-        if(podev == NULL) return;
+	if(podev == NULL) return;
 
 	mutex_lock(&qcedev_sent_bw_req);
 	if (high_bw_req) {
@@ -255,6 +256,16 @@ static int start_offload_cipher_req(struct qcedev_control *podev,
 				int *current_req_info);
 static int start_sha_req(struct qcedev_control *podev,
 			 int *current_req_info);
+
+static const struct file_operations qcedev_fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = qcedev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = compat_qcedev_ioctl,
+#endif
+	.open = qcedev_open,
+	.release = qcedev_release,
+};
 
 static struct qcedev_control qce_dev[] = {
 	{
@@ -582,12 +593,15 @@ static int start_offload_cipher_req(struct qcedev_control *podev,
 		return -EINVAL;
 	}
 
-	if (qcedev_areq->offload_cipher_op_req.is_copy_op) {
+	if (qcedev_areq->offload_cipher_op_req.is_copy_op ||
+	    qcedev_areq->offload_cipher_op_req.encrypt) {
 		creq.dir = QCE_ENCRYPT;
 	} else {
 		switch(qcedev_areq->offload_cipher_op_req.op) {
 		case QCEDEV_OFFLOAD_HLOS_HLOS:
+		case QCEDEV_OFFLOAD_HLOS_HLOS_1:
 		case QCEDEV_OFFLOAD_HLOS_CPB:
+		case QCEDEV_OFFLOAD_HLOS_CPB_1:
 			creq.dir = QCE_DECRYPT;
 			break;
 		case QCEDEV_OFFLOAD_CPB_HLOS:
@@ -736,7 +750,6 @@ static void qcedev_check_crypto_status(
 
 	return;
 }
-
 
 #define MAX_RETRIES	333
 
@@ -936,6 +949,7 @@ static int qcedev_sha_update_max_xfer(struct qcedev_async_req *qcedev_areq,
 	uint8_t *user_src = NULL;
 	uint8_t *k_src = NULL;
 	uint8_t *k_buf_src = NULL;
+	uint32_t buf_size = 0;
 	uint8_t *k_align_src = NULL;
 
 	uint32_t sha_pad_len = 0;
@@ -974,9 +988,8 @@ static int qcedev_sha_update_max_xfer(struct qcedev_async_req *qcedev_areq,
 		return 0;
 	}
 
-
-	k_buf_src = kmalloc(total + CACHE_LINE_SIZE * 2,
-				GFP_KERNEL);
+	buf_size = total + CACHE_LINE_SIZE * 2;
+	k_buf_src = kmalloc(buf_size, GFP_KERNEL);
 	if (k_buf_src == NULL)
 		return -ENOMEM;
 
@@ -996,7 +1009,7 @@ static int qcedev_sha_update_max_xfer(struct qcedev_async_req *qcedev_areq,
 	if (user_src && copy_from_user(k_src,
 				(void __user *)user_src,
 				qcedev_areq->sha_op_req.data[0].len)) {
-		memset(k_buf_src, 0, ksize((void *)k_buf_src));
+		memset(k_buf_src, 0, buf_size);
 		kfree(k_buf_src);
 		return -EFAULT;
 	}
@@ -1006,7 +1019,7 @@ static int qcedev_sha_update_max_xfer(struct qcedev_async_req *qcedev_areq,
 		if (user_src && copy_from_user(k_src,
 					(void __user *)user_src,
 					qcedev_areq->sha_op_req.data[i].len)) {
-			memset(k_buf_src, 0, ksize((void *)k_buf_src));
+			memset(k_buf_src, 0, buf_size);
 			kfree(k_buf_src);
 			return -EFAULT;
 		}
@@ -1037,7 +1050,7 @@ static int qcedev_sha_update_max_xfer(struct qcedev_async_req *qcedev_areq,
 	handle->sha_ctxt.last_blk = 0;
 	handle->sha_ctxt.first_blk = 0;
 
-	memset(k_buf_src, 0, ksize((void *)k_buf_src));
+	memset(k_buf_src, 0, buf_size);
 	kfree(k_buf_src);
 	return err;
 }
@@ -1063,17 +1076,19 @@ static int qcedev_sha_update(struct qcedev_async_req *qcedev_areq,
 		struct	qcedev_sha_op_req *saved_req;
 		struct	qcedev_sha_op_req req;
 		struct	qcedev_sha_op_req *sreq = &qcedev_areq->sha_op_req;
+		uint32_t req_size = 0;
 
+		req_size = sizeof(struct qcedev_sha_op_req);
 		/* save the original req structure */
 		saved_req =
-			kmalloc(sizeof(struct qcedev_sha_op_req), GFP_KERNEL);
+			kmalloc(req_size, GFP_KERNEL);
 		if (saved_req == NULL) {
 			pr_err("%s:Can't Allocate mem:saved_req 0x%lx\n",
 						__func__, (uintptr_t)saved_req);
 			return -ENOMEM;
 		}
-		memcpy(&req, sreq, sizeof(struct qcedev_sha_op_req));
-		memcpy(saved_req, sreq, sizeof(struct qcedev_sha_op_req));
+		memcpy(&req, sreq, sizeof(*sreq));
+		memcpy(saved_req, sreq, sizeof(*sreq));
 
 		i = 0;
 		/* Address 32 KB  at a time */
@@ -1145,7 +1160,7 @@ static int qcedev_sha_update(struct qcedev_async_req *qcedev_areq,
 		}
 		sreq->entries = saved_req->entries;
 		sreq->data_len = saved_req->data_len;
-		memset(saved_req, 0, ksize((void *)saved_req));
+		memset(saved_req, 0, req_size);
 		kfree(saved_req);
 	} else
 		err = qcedev_sha_update_max_xfer(qcedev_areq, handle, sg_src);
@@ -1160,6 +1175,7 @@ static int qcedev_sha_final(struct qcedev_async_req *qcedev_areq,
 	struct scatterlist sg_src;
 	uint32_t total;
 	uint8_t *k_buf_src = NULL;
+	uint32_t buf_size = 0;
 	uint8_t *k_align_src = NULL;
 
 	if (!handle->sha_ctxt.init_done) {
@@ -1171,8 +1187,8 @@ static int qcedev_sha_final(struct qcedev_async_req *qcedev_areq,
 
 	total = handle->sha_ctxt.trailing_buf_len;
 
-	k_buf_src = kmalloc(total + CACHE_LINE_SIZE * 2,
-				GFP_KERNEL);
+	buf_size = total + CACHE_LINE_SIZE * 2;
+	k_buf_src = kmalloc(buf_size, GFP_KERNEL);
 	if (k_buf_src == NULL)
 		return -ENOMEM;
 
@@ -1195,7 +1211,7 @@ static int qcedev_sha_final(struct qcedev_async_req *qcedev_areq,
 	handle->sha_ctxt.trailing_buf_len = 0;
 	handle->sha_ctxt.init_done = false;
 	memset(&handle->sha_ctxt.trailing_buf[0], 0, 64);
-	memset(k_buf_src, 0, ksize((void *)k_buf_src));
+	memset(k_buf_src, 0, buf_size);
 	kfree(k_buf_src);
 	qcedev_areq->sha_req.sreq.src = NULL;
 	return err;
@@ -1212,6 +1228,7 @@ static int qcedev_hash_cmac(struct qcedev_async_req *qcedev_areq,
 	uint8_t *user_src = NULL;
 	uint8_t *k_src = NULL;
 	uint8_t *k_buf_src = NULL;
+	uint32_t buf_size = 0;
 
 	total = qcedev_areq->sha_op_req.data_len;
 
@@ -1229,7 +1246,8 @@ static int qcedev_hash_cmac(struct qcedev_async_req *qcedev_areq,
 	if (total > U32_MAX - CACHE_LINE_SIZE * 2)
 		return -EINVAL;
 
-	k_buf_src = kmalloc(total + CACHE_LINE_SIZE * 2, GFP_KERNEL);
+	buf_size = total + CACHE_LINE_SIZE * 2;
+	k_buf_src = kmalloc(buf_size, GFP_KERNEL);
 	if (k_buf_src == NULL)
 		return -ENOMEM;
 
@@ -1241,7 +1259,7 @@ static int qcedev_hash_cmac(struct qcedev_async_req *qcedev_areq,
 		user_src = qcedev_areq->sha_op_req.data[i].vaddr;
 		if (user_src && copy_from_user(k_src, (void __user *)user_src,
 				qcedev_areq->sha_op_req.data[i].len)) {
-			memset(k_buf_src, 0, ksize((void *)k_buf_src));
+			memset(k_buf_src, 0, buf_size);
 			kfree(k_buf_src);
 			return -EFAULT;
 		}
@@ -1255,7 +1273,7 @@ static int qcedev_hash_cmac(struct qcedev_async_req *qcedev_areq,
 	handle->sha_ctxt.diglen = qcedev_areq->sha_op_req.diglen;
 	err = submit_req(qcedev_areq, handle);
 
-	memset(k_buf_src, 0, ksize((void *)k_buf_src));
+	memset(k_buf_src, 0, buf_size);
 	kfree(k_buf_src);
 	return err;
 }
@@ -1366,7 +1384,7 @@ static int qcedev_hmac_get_ohash(struct qcedev_async_req *qcedev_areq,
 
 	handle->sha_ctxt.last_blk = 0;
 	handle->sha_ctxt.first_blk = 0;
-	memset(k_src, 0, ksize((void *)k_src));
+	memset(k_src, 0, sha_block_size);
 	kfree(k_src);
 	qcedev_areq->sha_req.sreq.src = NULL;
 	return err;
@@ -1564,27 +1582,29 @@ static int qcedev_vbuf_ablk_cipher(struct qcedev_async_req *areq,
 	uint32_t total = 0;
 	uint32_t len;
 	uint8_t *k_buf_src = NULL;
+	uint32_t buf_size = 0;
 	uint8_t *k_align_src = NULL;
 	uint32_t max_data_xfer;
 	struct qcedev_cipher_op_req *saved_req;
+	uint32_t req_size = 0;
 	struct	qcedev_cipher_op_req *creq = &areq->cipher_op_req;
 
 	total = 0;
 
 	if (areq->cipher_op_req.mode == QCEDEV_AES_MODE_CTR)
 		byteoffset = areq->cipher_op_req.byteoffset;
-	k_buf_src = kmalloc(QCE_MAX_OPER_DATA + CACHE_LINE_SIZE * 2,
-				GFP_KERNEL);
+	buf_size = QCE_MAX_OPER_DATA + CACHE_LINE_SIZE * 2;
+	k_buf_src = kmalloc(buf_size, GFP_KERNEL);
 	if (k_buf_src == NULL)
 		return -ENOMEM;
 	k_align_src = (uint8_t *)ALIGN(((uintptr_t)k_buf_src),
 							CACHE_LINE_SIZE);
 	max_data_xfer = QCE_MAX_OPER_DATA - byteoffset;
 
-	saved_req = kmemdup(creq, sizeof(struct qcedev_cipher_op_req),
-				GFP_KERNEL);
+	req_size = sizeof(struct qcedev_cipher_op_req);
+	saved_req = kmemdup(creq, req_size, GFP_KERNEL);
 	if (saved_req == NULL) {
-		memset(k_buf_src, 0, ksize((void *)k_buf_src));
+		memset(k_buf_src, 0, buf_size);
 		kfree(k_buf_src);
 		return -ENOMEM;
 
@@ -1612,10 +1632,8 @@ static int qcedev_vbuf_ablk_cipher(struct qcedev_async_req *areq,
 				err = qcedev_vbuf_ablk_cipher_max_xfer(areq,
 						&di, handle, k_align_src);
 				if (err < 0) {
-					memset(saved_req, 0,
-						ksize((void *)saved_req));
-					memset(k_buf_src, 0,
-						ksize((void *)k_buf_src));
+					memset(saved_req, 0, req_size);
+					memset(k_buf_src, 0, buf_size);
 					kfree(k_buf_src);
 					kfree(saved_req);
 					return err;
@@ -1658,10 +1676,8 @@ static int qcedev_vbuf_ablk_cipher(struct qcedev_async_req *areq,
 				err = qcedev_vbuf_ablk_cipher_max_xfer(areq,
 						&di, handle, k_align_src);
 				if (err < 0) {
-					memset(saved_req, 0,
-						ksize((void *)saved_req));
-					memset(k_buf_src, 0,
-						ksize((void *)k_buf_src));
+					memset(saved_req, 0, req_size);
+					memset(k_buf_src, 0, buf_size);
 					kfree(k_buf_src);
 					kfree(saved_req);
 					return err;
@@ -1706,8 +1722,8 @@ static int qcedev_vbuf_ablk_cipher(struct qcedev_async_req *areq,
 	creq->data_len = saved_req->data_len;
 	creq->byteoffset = saved_req->byteoffset;
 
-	memset(saved_req, 0, ksize((void *)saved_req));
-	memset(k_buf_src, 0, ksize((void *)k_buf_src));
+	memset(saved_req, 0, req_size);
+	memset(k_buf_src, 0, buf_size);
 	kfree(saved_req);
 	kfree(k_buf_src);
 	return err;
@@ -2194,7 +2210,7 @@ long qcedev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case QCEDEV_IOCTL_ENC_REQ:
-	case QCEDEV_IOCTL_DEC_REQ: {
+	case QCEDEV_IOCTL_DEC_REQ:
 		K_COPY_FROM_USER(err, &qcedev_areq->cipher_op_req,
 				arg, sizeof(struct qcedev_cipher_op_req));
 		if (err) {
@@ -2213,15 +2229,15 @@ long qcedev_ioctl(struct file *file,
 		if (err)
 			goto exit_free_qcedev_areq;
 		K_COPY_TO_USER(err, arg,
-				&qcedev_areq->cipher_op_req,
-				sizeof(struct qcedev_cipher_op_req));
+					&qcedev_areq->cipher_op_req,
+					sizeof(struct qcedev_cipher_op_req));
 		if (err) {
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
 		}
 		break;
-	}
-	case QCEDEV_IOCTL_OFFLOAD_OP_REQ: {
+
+	case QCEDEV_IOCTL_OFFLOAD_OP_REQ:
 		K_COPY_FROM_USER(err, &qcedev_areq->offload_cipher_op_req,
 				arg, sizeof(struct qcedev_offload_cipher_op_req));
 		if (err) {
@@ -2247,11 +2263,13 @@ long qcedev_ioctl(struct file *file,
 			goto exit_free_qcedev_areq;
 		}
 		break;
-	}
-	case QCEDEV_IOCTL_SHA_INIT_REQ: {
+
+	case QCEDEV_IOCTL_SHA_INIT_REQ:
+		{
 		struct scatterlist sg_src;
+
 		K_COPY_FROM_USER(err, &qcedev_areq->sha_op_req,
-				arg, sizeof(struct qcedev_sha_op_req));
+					arg, sizeof(struct qcedev_sha_op_req));
 		if (err) {
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
@@ -2276,19 +2294,20 @@ long qcedev_ioctl(struct file *file,
 			goto exit_free_qcedev_areq;
 		}
 		handle->sha_ctxt.init_done = true;
+		}
 		break;
-	}
-	case QCEDEV_IOCTL_GET_CMAC_REQ: {
+	case QCEDEV_IOCTL_GET_CMAC_REQ:
 		if (!podev->ce_support.cmac) {
 			err = -ENOTTY;
 			goto exit_free_qcedev_areq;
 		}
-	}
-		/* Fall-through */
-	case QCEDEV_IOCTL_SHA_UPDATE_REQ: {
+		fallthrough;
+	case QCEDEV_IOCTL_SHA_UPDATE_REQ:
+		{
 		struct scatterlist sg_src;
+
 		K_COPY_FROM_USER(err, &qcedev_areq->sha_op_req,
-				arg, sizeof(struct qcedev_sha_op_req));
+					arg, sizeof(struct qcedev_sha_op_req));
 		if (err) {
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
@@ -2338,16 +2357,18 @@ long qcedev_ioctl(struct file *file,
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
 		}
+		}
 		break;
-	}
-	case QCEDEV_IOCTL_SHA_FINAL_REQ: {
+
+	case QCEDEV_IOCTL_SHA_FINAL_REQ:
+
 		if (!handle->sha_ctxt.init_done) {
 			pr_err("%s Init was not called\n", __func__);
 			err = -EINVAL;
 			goto exit_free_qcedev_areq;
 		}
 		K_COPY_FROM_USER(err, &qcedev_areq->sha_op_req,
-				arg, sizeof(struct qcedev_sha_op_req));
+					arg, sizeof(struct qcedev_sha_op_req));
 		if (err) {
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
@@ -2378,17 +2399,19 @@ long qcedev_ioctl(struct file *file,
 		mutex_unlock(&hash_access_lock);
 		K_COPY_TO_USER(err, arg, &qcedev_areq->sha_op_req,
 					sizeof(struct qcedev_sha_op_req));
-		if(err) {
+		if (err) {
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
 		}
 		handle->sha_ctxt.init_done = false;
 		break;
-	}
-	case QCEDEV_IOCTL_GET_SHA_REQ: {
+
+	case QCEDEV_IOCTL_GET_SHA_REQ:
+		{
 		struct scatterlist sg_src;
+
 		K_COPY_FROM_USER(err, &qcedev_areq->sha_op_req,
-				arg, sizeof(struct qcedev_sha_op_req));
+					arg, sizeof(struct qcedev_sha_op_req));
 		if (err) {
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
@@ -2429,82 +2452,86 @@ long qcedev_ioctl(struct file *file,
 			err = -EFAULT;
 			goto exit_free_qcedev_areq;
 		}
+		}
 		break;
-	}
-	case QCEDEV_IOCTL_MAP_BUF_REQ: {
-		unsigned long long vaddr = 0;
-		struct qcedev_map_buf_req map_buf = { {0} };
-		int i = 0;
 
-		K_COPY_FROM_USER(err, &map_buf,
-				arg, sizeof(map_buf));
-		if (err) {
-			err = -EFAULT;
-			goto exit_free_qcedev_areq;
-		}
+	case QCEDEV_IOCTL_MAP_BUF_REQ:
+		{
+			unsigned long long vaddr = 0;
+			struct qcedev_map_buf_req map_buf = { {0} };
+			int i = 0;
 
-		if (map_buf.num_fds > ARRAY_SIZE(map_buf.fd)) {
-			pr_err("%s: err: num_fds = %d exceeds max value\n",
-						__func__, map_buf.num_fds);
-			err = -EINVAL;
-			goto exit_free_qcedev_areq;
-		}
-
-		for (i = 0; i < map_buf.num_fds; i++) {
-			err = qcedev_check_and_map_buffer(handle,
-					map_buf.fd[i],
-					map_buf.fd_offset[i],
-					map_buf.fd_size[i],
-					&vaddr);
+			K_COPY_FROM_USER(err, &map_buf,
+							arg, sizeof(map_buf));
 			if (err) {
-				pr_err(
-					"%s: err: failed to map fd(%d) - %d\n",
-					__func__, map_buf.fd[i], err);
+				err = -EFAULT;
 				goto exit_free_qcedev_areq;
 			}
-			map_buf.buf_vaddr[i] = vaddr;
-			pr_info("%s: info: vaddr = %llx\n, fd = %d",
-				__func__, vaddr, map_buf.fd[i]);
-		}
 
-		K_COPY_TO_USER(err, arg, &map_buf,
-				sizeof(map_buf));
-		if (err) {
-			err = -EFAULT;
-			goto exit_free_qcedev_areq;
-		}
-		break;
-	}
-	case QCEDEV_IOCTL_UNMAP_BUF_REQ: {
-		struct qcedev_unmap_buf_req unmap_buf = { { 0 } };
-		int i = 0;
-
-		K_COPY_FROM_USER(err, &unmap_buf,
-				arg, sizeof(unmap_buf));
-		if (err) {
-			err = -EFAULT;
-			goto exit_free_qcedev_areq;
-		}
-		if (unmap_buf.num_fds > ARRAY_SIZE(unmap_buf.fd)) {
-			pr_err("%s: err: num_fds = %d exceeds max value\n",
-						__func__, unmap_buf.num_fds);
-			err = -EINVAL;
-			goto exit_free_qcedev_areq;
-		}
-
-		for (i = 0; i < unmap_buf.num_fds; i++) {
-			err = qcedev_check_and_unmap_buffer(handle,
-					unmap_buf.fd[i]);
-			if (err) {
-				pr_err(
-					"%s: err: failed to unmap fd(%d) - %d\n",
-					 __func__,
-					unmap_buf.fd[i], err);
+			if (map_buf.num_fds > ARRAY_SIZE(map_buf.fd)) {
+				pr_err("%s: err: num_fds = %d exceeds max value\n",
+							__func__, map_buf.num_fds);
+				err = -EINVAL;
 				goto exit_free_qcedev_areq;
 			}
+
+			for (i = 0; i < map_buf.num_fds; i++) {
+				err = qcedev_check_and_map_buffer(handle,
+						map_buf.fd[i],
+						map_buf.fd_offset[i],
+						map_buf.fd_size[i],
+						&vaddr);
+				if (err) {
+					pr_err(
+						"%s: err: failed to map fd(%d) - %d\n",
+						__func__, map_buf.fd[i], err);
+					goto exit_free_qcedev_areq;
+				}
+				map_buf.buf_vaddr[i] = vaddr;
+				pr_info("%s: info: vaddr = %llx\n, fd = %d",
+					__func__, vaddr, map_buf.fd[i]);
+			}
+
+			K_COPY_TO_USER(err, arg, &map_buf,
+					sizeof(map_buf));
+			if (err) {
+				err = -EFAULT;
+				goto exit_free_qcedev_areq;
+			}
+			break;
 		}
-		break;
-	}
+
+	case QCEDEV_IOCTL_UNMAP_BUF_REQ:
+		{
+			struct qcedev_unmap_buf_req unmap_buf = { { 0 } };
+			int i = 0;
+
+			K_COPY_FROM_USER(err, &unmap_buf,
+							arg, sizeof(unmap_buf));
+			if (err) {
+				err = -EFAULT;
+				goto exit_free_qcedev_areq;
+			}
+			if (unmap_buf.num_fds > ARRAY_SIZE(unmap_buf.fd)) {
+				pr_err("%s: err: num_fds = %d exceeds max value\n",
+							__func__, unmap_buf.num_fds);
+				err = -EINVAL;
+				goto exit_free_qcedev_areq;
+			}
+
+			for (i = 0; i < unmap_buf.num_fds; i++) {
+				err = qcedev_check_and_unmap_buffer(handle,
+						unmap_buf.fd[i]);
+				if (err) {
+					pr_err(
+						"%s: err: failed to unmap fd(%d) - %d\n",
+						 __func__,
+						unmap_buf.fd[i], err);
+					goto exit_free_qcedev_areq;
+				}
+			}
+			break;
+		}
 
 	default:
 		err = -ENOTTY;
@@ -2516,16 +2543,6 @@ exit_free_qcedev_areq:
 	return err;
 }
 
-static const struct file_operations qcedev_fops = {
-	.owner = THIS_MODULE,
-	.unlocked_ioctl = qcedev_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = compat_qcedev_ioctl,
-#endif
-	.open = qcedev_open,
-	.release = qcedev_release,
-};
-
 static int qcedev_probe_device(struct platform_device *pdev)
 {
 	void *handle = NULL;
@@ -2534,6 +2551,41 @@ static int qcedev_probe_device(struct platform_device *pdev)
 	struct msm_ce_hw_support *platform_support;
 
 	podev = &qce_dev[0];
+
+	rc = alloc_chrdev_region(&qcedev_device_no, 0, 1, QCEDEV_DEV);
+	if (rc < 0) {
+		pr_err("alloc_chrdev_region failed %d\n", rc);
+		return rc;
+	}
+
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	driver_class = class_create(QCEDEV_DEV);
+#else
+	driver_class = class_create(THIS_MODULE, QCEDEV_DEV);
+#endif
+	if (IS_ERR(driver_class)) {
+		rc = -ENOMEM;
+		pr_err("class_create failed %d\n", rc);
+		goto exit_unreg_chrdev_region;
+	}
+
+	class_dev = device_create(driver_class, NULL, qcedev_device_no, NULL,
+			QCEDEV_DEV);
+	if (IS_ERR(class_dev)) {
+		pr_err("class_device_create failed %d\n", rc);
+		rc = -ENOMEM;
+		goto exit_destroy_class;
+	}
+
+	cdev_init(&podev->cdev, &qcedev_fops);
+	podev->cdev.owner = THIS_MODULE;
+
+	rc = cdev_add(&podev->cdev, MKDEV(MAJOR(qcedev_device_no), 0), 1);
+	if (rc < 0) {
+		pr_err("cdev_add failed %d\n", rc);
+		goto exit_destroy_device;
+	}
+	podev->minor = 0;
 
 	podev->high_bw_req_count = 0;
 	INIT_LIST_HEAD(&podev->ready_commands);
@@ -2632,36 +2684,6 @@ static int qcedev_probe_device(struct platform_device *pdev)
 			__func__, rc);
 		goto exit_mem_new_client;
 	}
-	rc = alloc_chrdev_region(&qcedev_device_no, 0, 1, QCEDEV_DEV);
-	if (rc < 0) {
-		pr_err("alloc_chrdev_region failed %d\n", rc);
-		return rc;
-	}
-
-	driver_class = class_create(THIS_MODULE, QCEDEV_DEV);
-	if (IS_ERR(driver_class)) {
-		rc = -ENOMEM;
-		pr_err("class_create failed %d\n", rc);
-		goto exit_unreg_chrdev_region;
-	}
-
-	class_dev = device_create(driver_class, NULL, qcedev_device_no, NULL,
-			QCEDEV_DEV);
-	if (IS_ERR(class_dev)) {
-		pr_err("class_device_create failed %d\n", rc);
-		rc = -ENOMEM;
-		goto exit_destroy_class;
-	}
-
-	cdev_init(&podev->cdev, &qcedev_fops);
-	podev->cdev.owner = THIS_MODULE;
-
-	rc = cdev_add(&podev->cdev, MKDEV(MAJOR(qcedev_device_no), 0), 1);
-	if (rc < 0) {
-		pr_err("cdev_add failed %d\n", rc);
-		goto exit_destroy_device;
-	}
-	podev->minor = 0;
 
 	return 0;
 
@@ -2713,7 +2735,7 @@ static int qcedev_remove(struct platform_device *pdev)
 	podev = platform_get_drvdata(pdev);
 	if (!podev)
 		return 0;
-	
+
 	qcedev_ce_high_bw_req(podev, true);
 	if (podev->qce)
 		qce_close(podev->qce);
@@ -2898,6 +2920,6 @@ static void qcedev_exit(void)
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("QTI DEV Crypto driver");
-
+MODULE_IMPORT_NS(DMA_BUF);
 module_init(qcedev_init);
 module_exit(qcedev_exit);

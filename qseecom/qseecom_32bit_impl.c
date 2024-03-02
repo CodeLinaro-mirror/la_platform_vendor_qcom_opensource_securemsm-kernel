@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2018, 2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
-#include <linux/qseecom.h>
+#include <linux/qseecom_api.h>
 #include <linux/compat.h>
 #include <linux/mman.h>
 #include <linux/module.h>
@@ -38,14 +38,14 @@ static int get_qseecom_register_listener_req_32bit(
 	compat_ulong_t sb_size;
 
 	err = get_user(listener_id, &data32->listener_id);
-	memcpy( &data->listener_id, &listener_id, sizeof(listener_id));
+	memcpy(&data->listener_id, &listener_id, sizeof(listener_id));
 	err |= get_user(ifd_data_fd, &data32->ifd_data_fd);
-	memcpy( &data->ifd_data_fd, &ifd_data_fd, sizeof(ifd_data_fd));
+	memcpy(&data->ifd_data_fd, &ifd_data_fd, sizeof(ifd_data_fd));
 	err |= get_user(virt_sb_base, &data32->virt_sb_base);
 	data->virt_sb_base = NULL;
 	memcpy(&data->virt_sb_base, &virt_sb_base, sizeof(virt_sb_base));
 	err |= get_user(sb_size, &data32->sb_size);
-	memcpy( &data->sb_size, &sb_size, sizeof(sb_size));
+	memcpy(&data->sb_size, &sb_size, sizeof(sb_size));
 	return err;
 }
 
@@ -63,19 +63,19 @@ static int get_qseecom_load_img_req_32bit(
 	unsigned int i;
 
 	err = get_user(mdt_len, &data32->mdt_len);
-	memcpy( &data->mdt_len, &mdt_len, sizeof(mdt_len));
+	memcpy(&data->mdt_len, &mdt_len, sizeof(mdt_len));
 	err |= get_user(img_len, &data32->img_len);
-	memcpy( &data->img_len, &img_len, sizeof(img_len));
+	memcpy(&data->img_len, &img_len, sizeof(img_len));
 	err |= get_user(ifd_data_fd, &data32->ifd_data_fd);
-	memcpy( &data->ifd_data_fd, &ifd_data_fd, sizeof(ifd_data_fd));
+	memcpy(&data->ifd_data_fd, &ifd_data_fd, sizeof(ifd_data_fd));
 	for (i = 0; i < MAX_APP_NAME_SIZE; i++) {
 		err |= get_user(img_name, &(data32->img_name[i]));
-		memcpy( &data->img_name[i], &img_name, sizeof(img_name));
+		memcpy(&data->img_name[i], &img_name, sizeof(img_name));
 	}
 	err |= get_user(app_arch, &data32->app_arch);
-	memcpy( &data->app_arch, &app_arch, sizeof(app_arch));
+	memcpy(&data->app_arch, &app_arch, sizeof(app_arch));
 	err |= get_user(app_id, &data32->app_id);
-	memcpy( &data->app_id, &app_id, sizeof(app_id));
+	memcpy(&data->app_id, &app_id, sizeof(app_id));
 	return err;
 }
 
@@ -91,14 +91,14 @@ static int get_qseecom_send_cmd_req_32bit(
 
 	err = get_user(cmd_req_buf, &data32->cmd_req_buf);
 	data->cmd_req_buf = NULL;
-	memcpy( &data->cmd_req_buf, &cmd_req_buf, sizeof(cmd_req_buf));
+	memcpy(&data->cmd_req_buf, &cmd_req_buf, sizeof(cmd_req_buf));
 	err |= get_user(cmd_req_len, &data32->cmd_req_len);
-	memcpy( &data->cmd_req_len, &cmd_req_len, sizeof(cmd_req_len));
+	memcpy(&data->cmd_req_len, &cmd_req_len, sizeof(cmd_req_len));
 	err |= get_user(resp_buf, &data32->resp_buf);
 	data->resp_buf = NULL;
-	memcpy( &data->resp_buf, &resp_buf, sizeof(resp_buf));
+	memcpy(&data->resp_buf, &resp_buf, sizeof(resp_buf));
 	err |= get_user(resp_len, &data32->resp_len);
-	memcpy( &data->resp_len, &resp_len, sizeof(resp_len));
+	memcpy(&data->resp_len, &resp_len, sizeof(resp_len));
 	return err;
 }
 
@@ -117,14 +117,14 @@ static int get_qseecom_send_modfd_cmd_req_32bit(
 
 	err = get_user(cmd_req_buf, &data32->cmd_req_buf);
 	data->cmd_req_buf = NULL;
-	memcpy( &data->cmd_req_buf, &cmd_req_buf, sizeof(cmd_req_buf));
+	memcpy(&data->cmd_req_buf, &cmd_req_buf, sizeof(cmd_req_buf));
 	err |= get_user(cmd_req_len, &data32->cmd_req_len);
 	memcpy(&data->cmd_req_len, &cmd_req_len, sizeof(cmd_req_len));
 	err |= get_user(resp_buf, &data32->resp_buf);
 	data->resp_buf = NULL;
 	memcpy(&data->resp_buf, &resp_buf, sizeof(resp_buf));
 	err |= get_user(resp_len, &data32->resp_len);
-	memcpy( &data->resp_len, &resp_len, sizeof(resp_len));
+	memcpy(&data->resp_len, &resp_len, sizeof(resp_len));
 	for (i = 0; i < MAX_ION_FD; i++) {
 		err |= get_user(fd, &data32->ifd_data[i].fd);
 		memcpy(&data->ifd_data[i].fd, &fd, sizeof(fd));
@@ -162,7 +162,7 @@ static int get_qseecom_qseos_version_req_32bit(
 	compat_uint_t qseos_version;
 
 	err = get_user(qseos_version, &data32->qseos_version);
-	memcpy( &data->qseos_version, &qseos_version, sizeof(qseos_version));
+	memcpy(&data->qseos_version, &qseos_version, sizeof(qseos_version));
 	return err;
 }
 
@@ -224,7 +224,7 @@ static int get_qseecom_create_key_req_32bit(
 
 	for (i = 0; i < QSEECOM_HASH_SIZE; i++) {
 		err |= get_user(hash32, &(data32->hash32[i]));
-		memcpy( &data->hash32[i], &hash32, sizeof(hash32));
+		memcpy(&data->hash32[i], &hash32, sizeof(hash32));
 	}
 	err = get_user(usage, &data32->usage);
 	memcpy(&data->usage, &usage, sizeof(usage));
@@ -260,11 +260,11 @@ static int get_qseecom_update_key_userinfo_req_32bit(
 
 	for (i = 0; i < QSEECOM_HASH_SIZE; i++) {
 		err |= get_user(current_hash32, &(data32->current_hash32[i]));
-		memcpy( &data->current_hash32[i], &current_hash32, sizeof(current_hash32));
+		memcpy(&data->current_hash32[i], &current_hash32, sizeof(current_hash32));
 	}
 	for (i = 0; i < QSEECOM_HASH_SIZE; i++) {
 		err |= get_user(new_hash32, &(data32->new_hash32[i]));
-		memcpy( &data->new_hash32[i], &new_hash32, sizeof(new_hash32));
+		memcpy(&data->new_hash32[i], &new_hash32, sizeof(new_hash32));
 	}
 	err = get_user(usage, &data32->usage);
 	memcpy(&data->usage, &usage, sizeof(usage));
@@ -285,7 +285,7 @@ static int get_qseecom_save_partition_hash_req_32bit(
 	memcpy(&data->partition_id, &partition_id, sizeof(partition_id));
 	for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
 		err |= get_user(digest, &(data32->digest[i]));
-		memcpy( &data->digest[i], &digest, sizeof(digest));
+		memcpy(&data->digest[i], &digest, sizeof(digest));
 	}
 	return err;
 }
@@ -413,17 +413,6 @@ static int get_qseecom_qteec_modfd_req_32bit(
 	return err;
 }
 
-static int get_int_32bit(compat_int_t __user *data32,
-		int *data)
-{
-	compat_int_t x;
-	int err;
-
-	err = get_user(x, data32);
-	memcpy(&data, &x, sizeof(x));
-	return err;
-}
-
 static int put_qseecom_load_img_req_32bit(
 		struct qseecom_load_img_req_32bit __user *data32,
 		struct qseecom_load_img_req *data)
@@ -460,6 +449,7 @@ static int put_qseecom_qseos_version_req_32bit(
 {
 	compat_uint_t qseos_version;
 	int err;
+
 	memcpy(&qseos_version, &data->qseos_version, sizeof(qseos_version));
 	err = put_user(qseos_version, &data32->qseos_version);
 	return err;
@@ -514,14 +504,8 @@ static unsigned int convert_cmd(unsigned int cmd)
 		return QSEECOM_IOCTL_SEND_RESP_REQ;
 	case QSEECOM_IOCTL_UNLOAD_APP_REQ_32BIT:
 		return QSEECOM_IOCTL_UNLOAD_APP_REQ;
-	case QSEECOM_IOCTL_PERF_ENABLE_REQ_32BIT:
-		return QSEECOM_IOCTL_PERF_ENABLE_REQ;
-	case QSEECOM_IOCTL_PERF_DISABLE_REQ_32BIT:
-		return QSEECOM_IOCTL_PERF_DISABLE_REQ;
 	case QSEECOM_IOCTL_UNLOAD_EXTERNAL_ELF_REQ_32BIT:
 		return QSEECOM_IOCTL_UNLOAD_EXTERNAL_ELF_REQ;
-	case QSEECOM_IOCTL_SET_BUS_SCALING_REQ_32BIT:
-		return QSEECOM_IOCTL_SET_BUS_SCALING_REQ;
 	case QSEECOM_IOCTL_SEND_CMD_REQ_32BIT:
 		return QSEECOM_IOCTL_SEND_CMD_REQ;
 	case QSEECOM_IOCTL_SEND_MODFD_CMD_REQ_32BIT:
@@ -572,14 +556,13 @@ long qseecom_ioctl_32bit(struct file *file,
 		unsigned int cmd, unsigned long arg)
 {
 	long ret;
+
 	switch (cmd) {
 
 	case QSEECOM_IOCTL_UNREGISTER_LISTENER_REQ_32BIT:
 	case QSEECOM_IOCTL_RECEIVE_REQ_32BIT:
 	case QSEECOM_IOCTL_SEND_RESP_REQ_32BIT:
 	case QSEECOM_IOCTL_UNLOAD_APP_REQ_32BIT:
-	case QSEECOM_IOCTL_PERF_ENABLE_REQ_32BIT:
-	case QSEECOM_IOCTL_PERF_DISABLE_REQ_32BIT:
 	case QSEECOM_IOCTL_UNLOAD_EXTERNAL_ELF_REQ_32BIT: {
 		return qseecom_ioctl(file, convert_cmd(cmd), 0);
 	}
@@ -588,6 +571,7 @@ long qseecom_ioctl_32bit(struct file *file,
 		struct qseecom_register_listener_req_32bit __user *data32;
 		struct qseecom_register_listener_req *data;
 		int err;
+
 		data32 = compat_ptr(arg);
 		data = kmalloc(sizeof(*data), GFP_KERNEL);
 		if (data == NULL)
@@ -715,26 +699,6 @@ long qseecom_ioctl_32bit(struct file *file,
 		err = put_qseecom_qseos_version_req_32bit(data32, data);
 		kfree(data);
 		return ret ? ret : err;
-	}
-	break;
-	case QSEECOM_IOCTL_SET_BUS_SCALING_REQ_32BIT: {
-		compat_int_t __user *data32;
-		int *data;
-		int err;
-
-		data32 = compat_ptr(arg);
-		data = kmalloc(sizeof(*data), GFP_KERNEL);
-		if (data == NULL)
-			return -EFAULT;
-		err = get_int_32bit(data32, data);
-		if (err) {
-			kfree(data);
-			return err;
-		}
-		ret = qseecom_ioctl(file, convert_cmd(cmd),
-						(unsigned long)data);
-		kfree(data);
-		return ret;
 	}
 	break;
 	case QSEECOM_IOCTL_LOAD_EXTERNAL_ELF_REQ_32BIT: {
@@ -931,7 +895,7 @@ long qseecom_ioctl_32bit(struct file *file,
 			return err;
 		}
 
-		ret= qseecom_ioctl(file, convert_cmd(cmd),
+		ret = qseecom_ioctl(file, convert_cmd(cmd),
 						(unsigned long)data);
 		kfree(data);
 		return ret;
