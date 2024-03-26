@@ -3,7 +3,7 @@
  * QTI CE device driver.
  *
  * Copyright (c) 2010-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/mman.h>
@@ -50,7 +50,7 @@
  * This is temporary, and we can use the 1500 value once the
  * core irqs are enabled.
  */
-#define MAX_OFFLOAD_CRYPTO_WAIT_TIME 20
+#define MAX_OFFLOAD_CRYPTO_WAIT_TIME 50
 
 #define MAX_REQUEST_TIME 5000
 
@@ -363,9 +363,9 @@ static void req_done(unsigned long data)
 	podev->active_command = NULL;
 
 	if (areq) {
+		areq->state = QCEDEV_REQ_DONE;
 		if (!areq->timed_out)
 			complete(&areq->complete);
-		areq->state = QCEDEV_REQ_DONE;
 	}
 
 	/* Look through queued requests and wake up the corresponding thread */
