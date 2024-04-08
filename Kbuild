@@ -10,7 +10,7 @@ ifneq ($(CONFIG_ARCH_QTI_VM), y)
 endif
 
 #Enable Qseecom if CONFIG_ARCH_KHAJE OR CONFIG_ARCH_KHAJE or CONFIG_QTI_QUIN_GVM is set to y
-ifneq (, $(filter y, $(CONFIG_QTI_QUIN_GVM) $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_SA6155)))
+ifneq (, $(filter y, $(CONFIG_QTI_QUIN_GVM) $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_SA6155) $(CONFIG_ARCH_MONACO)))
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom.h
 else
@@ -26,12 +26,20 @@ endif
 
 obj-$(CONFIG_QSEECOM) += qseecom_dlkm.o
 qseecom_dlkm-objs := qseecom/qseecom.o
+qseecom_dlkm-$(CONFIG_COMPAT) += qseecom/qseecom_32bit_impl.o
 
 include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smcinvoke.conf
 LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smcinvoke.h
 
 obj-$(CONFIG_QCOM_SMCINVOKE) += smcinvoke_dlkm.o
-smcinvoke_dlkm-objs := smcinvoke/smcinvoke_kernel.o smcinvoke/smcinvoke.o
+ifneq ($(CONFIG_QCOM_SI_CORE), y)
+    smcinvoke_dlkm-objs := smcinvoke/compat/smcinvoke_kernel.o
+    smcinvoke_dlkm-objs += smcinvoke/compat/smcinvoke.o
+else
+    smcinvoke_dlkm-objs := smcinvoke/si_core_xts/qseecom.o
+    smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci_kernel.o
+    smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci.o
+endif
 
 obj-$(CONFIG_QTI_TZ_LOG) += tz_log_dlkm.o
 tz_log_dlkm-objs := tz_log/tz_log.o
@@ -65,14 +73,15 @@ ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN))
     endif
 endif
 
-#Enable QCE Dev Frontend if CONFIG_ARCH_LEMANS is set to y
-#ifeq ($(CONFIG_ARCH_LEMANS), y)
-ifeq ($(CONFIG_QTI_QUIN_GVM), y)
+#Enable QCEDEV_FE driver only on Automotive Lemans LA GVM.
+ifeq ($(ENABLE_HYP),true)
+    ifeq ($(TARGET_BOARD_PLATFORM),gen4)
 
-include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
-LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
+        include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
+        LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
 
-obj-$(CONFIG_QCEDEV_FE) += qcedev_fe_dlkm.o
-qcedev_fe_dlkm-objs := qcedev_fe/qcedev_fe.o qcedev_fe/qcedev_smmu.o
-endif #CONFIG_QTI_QUIN_GVM
-#endif #CONFIG_ARCH_LEMANS
+        obj-$(CONFIG_QCEDEV_FE) += qcedev_fe_dlkm.o
+        qcedev_fe_dlkm-objs := qcedev_fe/qcedev_fe.o qcedev_fe/qcedev_smmu.o
+
+    endif #TARGET_BOARD_PLATFORM
+endif #ENABLE_HYP

@@ -55,8 +55,8 @@
 #endif
 #include "misc/qseecomi.h"
 
-#if (LINUX_VERSION_CODE <= KERNEL_VERSION(6,0,0))
-#define KERNEL_VERSION_LEGACY
+#if IS_ENABLED(CONFIG_COMPAT)
+#include "qseecom_32bit_impl.h"
 #endif
 
 #define QSEECOM_DEV			"qseecom"
@@ -153,6 +153,28 @@ enum qseecom_bandwidth_request_mode {
 	MEDIUM,
 	HIGH,
 };
+#define K_COPY_FROM_USER(err, dst, src, size) \
+	do {\
+		if (!(is_compat_task()))\
+			err = copy_from_user((dst),\
+			(void const __user *)(src),\
+			(size));\
+		else {\
+			memmove((dst), (src), (size));\
+			err = 0;\
+		} \
+	} while (0)
+
+#define K_COPY_TO_USER(err, dst, src, size) \
+	do {\
+		if (!(is_compat_task()))\
+			err = copy_to_user((void __user *)(dst),\
+			(src), (size));\
+		else {\
+			memmove((dst), (src), (size));\
+			err = 0;\
+		} \
+	} while (0)
 
 enum qseecom_clk_definitions {
 	CLK_DFAB = 0,
@@ -480,6 +502,15 @@ static struct qseecom_key_id_usage_desc key_id_array[] = {
 	},
 };
 
+struct qseecom_dma_buf_vmap_data {
+#if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+	struct iosys_map map;
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	struct dma_buf_map map;
+#endif
+	void *vaddr;
+};
+
 /* Function proto types */
 static int qsee_vote_for_clock(struct qseecom_dev_handle *, int32_t);
 static void qsee_disable_clock_vote(struct qseecom_dev_handle *, int32_t);
@@ -557,6 +588,73 @@ static char *__qseecom_alloc_tzbuf(uint32_t size,
 static void __qseecom_free_tzbuf(struct qtee_shm *shm)
 {
 	qtee_shmbridge_free_shm(shm);
+}
+
+static void qseecom_dma_buf_map_init_vaddr_wrapper(void *vaddr,
+				struct qseecom_dma_buf_vmap_data *vmap)
+{
+#if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+	vmap->map = (struct iosys_map) IOSYS_MAP_INIT_VADDR(vaddr);
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	vmap->map = (struct dma_buf_map) DMA_BUF_MAP_INIT_VADDR(vaddr);
+#else
+	pr_info("not required to initialize\n");
+#endif
+}
+
+static int qseecom_dma_buf_vmap_wrapper(struct dma_buf *dmabuf,
+				struct qseecom_dma_buf_vmap_data *vmap)
+{
+	int ret = 0;
+
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	ret = dma_buf_vmap_unlocked(dmabuf, &vmap->map);
+	vmap->vaddr = vmap->map.vaddr;
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	ret = dma_buf_vmap(dmabuf, &vmap->map);
+	vmap->vaddr = vmap->map.vaddr;
+#else
+	vmap->vaddr = dma_buf_vmap(dmabuf);
+	if (!vmap->vaddr)
+		ret = -EINVAL;
+#endif
+	return ret;
+}
+
+static void qseecom_dma_buf_vunmap_wrapper(struct dma_buf *dmabuf,
+				struct qseecom_dma_buf_vmap_data *vmap)
+{
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	dma_buf_vunmap_unlocked(dmabuf, &vmap->map);
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	dma_buf_vunmap(dmabuf, &vmap->map);
+#else
+	dma_buf_vunmap(dmabuf, vmap->vaddr);
+#endif
+}
+
+static struct sg_table *qseecom_dma_buf_map_attachment_wrapper(
+				struct dma_buf_attachment *attachment,
+				enum dma_data_direction  direction)
+{
+	struct sg_table *sg_table;
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	sg_table = dma_buf_map_attachment_unlocked(attachment, direction);
+#else
+	sg_table = dma_buf_map_attachment(attachment, direction);
+#endif
+	return sg_table;
+}
+
+static void qseecom_dma_buf_unmap_attachment_wrapper(struct dma_buf_attachment *attach,
+				struct sg_table *sg_table,
+				enum dma_data_direction direction)
+{
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	dma_buf_unmap_attachment_unlocked(attach, sg_table, direction);
+#else
+	dma_buf_unmap_attachment(attach, sg_table, direction);
+#endif
 }
 
 static int qseecom_scm_call2(uint32_t svc_id, uint32_t tz_cmd_id,
@@ -1382,10 +1480,10 @@ static int qseecom_dmabuf_map(int ion_fd, struct sg_table **sgt,
 		goto err_put;
 	}
 
-	new_sgt = dma_buf_map_attachment(new_attach, DMA_BIDIRECTIONAL);
+	new_sgt = qseecom_dma_buf_map_attachment_wrapper(new_attach, DMA_BIDIRECTIONAL);
 	if (IS_ERR_OR_NULL(new_sgt)) {
 		ret = PTR_ERR(new_sgt);
-		pr_err("dma_buf_map_attachment for ion_fd %d failed ret = %d\n",
+		pr_err("qseecom_dma_buf_map_attachment_wrapper for ion_fd %d failed ret = %d\n",
 				ion_fd, ret);
 		goto err_detach;
 	}
@@ -1401,7 +1499,7 @@ static int qseecom_dmabuf_map(int ion_fd, struct sg_table **sgt,
 	return ret;
 
 err_unmap_attachment:
-	dma_buf_unmap_attachment(new_attach, new_sgt, DMA_BIDIRECTIONAL);
+	qseecom_dma_buf_unmap_attachment_wrapper(new_attach, new_sgt, DMA_BIDIRECTIONAL);
 err_detach:
 	dma_buf_detach(new_dma_buf, new_attach);
 err_put:
@@ -1414,7 +1512,7 @@ static void qseecom_dmabuf_unmap(struct sg_table *sgt,
 			struct dma_buf_attachment *attach,
 			struct dma_buf *dmabuf)
 {
-	dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
+	qseecom_dma_buf_unmap_attachment_wrapper(attach, sgt, DMA_BIDIRECTIONAL);
 	dma_buf_detach(dmabuf, attach);
 	dma_buf_put(dmabuf);
 }
@@ -1428,11 +1526,7 @@ static int qseecom_vaddr_map(int ion_fd,
 {
 	struct dma_buf *new_dma_buf = NULL;
 	struct dma_buf_attachment *new_attach = NULL;
-#ifdef KERNEL_VERSION_LEGACY
-	struct dma_buf_map new_dma_buf_map = {0};
-#else
-	struct iosys_map new_dma_buf_map = {0};
-#endif
+	struct qseecom_dma_buf_vmap_data new_dma_buf_map = {0};
 	struct sg_table *new_sgt = NULL;
 	void *new_va = NULL;
 	int ret = 0;
@@ -1449,10 +1543,10 @@ static int qseecom_vaddr_map(int ion_fd,
 	*sb_length = new_sgt->sgl->length;
 	//Invalidate the Buffer
 	dma_buf_begin_cpu_access(new_dma_buf, DMA_BIDIRECTIONAL);
-	ret = dma_buf_vmap(new_dma_buf, &new_dma_buf_map);
+	ret = qseecom_dma_buf_vmap_wrapper(new_dma_buf, &new_dma_buf_map);
 	new_va = ret ? NULL : new_dma_buf_map.vaddr;
 	if (!new_va) {
-		pr_err("dma_buf_vmap failed\n");
+		pr_err("qseecom_dma_buf_vmap_wrapper failed\n");
 		ret = -ENOMEM;
 		goto err_unmap;
 	}
@@ -1476,16 +1570,15 @@ static void qseecom_vaddr_unmap(void *vaddr, struct sg_table *sgt,
 		struct dma_buf_attachment *attach,
 		struct dma_buf *dmabuf)
 {
-#ifdef KERNEL_VERSION_LEGACY
-	struct dma_buf_map  dmabufmap = DMA_BUF_MAP_INIT_VADDR(vaddr);
-#else
-	struct iosys_map  dmabufmap = IOSYS_MAP_INIT_VADDR(vaddr);
-#endif
+	struct qseecom_dma_buf_vmap_data dmabufmap = {0};
+
+	//Initialize dmabuf map
+	qseecom_dma_buf_map_init_vaddr_wrapper(vaddr, &dmabufmap);
 
 	if (!dmabuf || !vaddr || !sgt || !attach)
 		return;
-	pr_err("Trying to unmap vaddr");
-	dma_buf_vunmap(dmabuf, &dmabufmap);
+	pr_debug("Trying to unmap vaddr\n");
+	qseecom_dma_buf_vunmap_wrapper(dmabuf, &dmabufmap);
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	qseecom_dmabuf_unmap(sgt, attach, dmabuf);
 }
@@ -1572,7 +1665,7 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 		return -EINVAL;
 	}
 
-	ret = copy_from_user(&rcvd_lstnr, argp, sizeof(rcvd_lstnr));
+	K_COPY_FROM_USER(ret, &rcvd_lstnr, argp, sizeof(rcvd_lstnr));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -2029,12 +2122,13 @@ static int __qseecom_enable_clk_scale_up(struct qseecom_dev_handle *data)
 static int qseecom_set_client_mem_param(struct qseecom_dev_handle *data,
 						void __user *argp)
 {
-	int32_t ret;
+	int32_t ret = 0;
 	struct qseecom_set_sb_mem_param_req req;
 	size_t len;
 
 	/* Copy the relevant information needed for loading the image */
-	if (copy_from_user(&req, (void __user *)argp, sizeof(req)))
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
+	if (ret)
 		return -EFAULT;
 
 	if ((req.ifd_data_fd <= 0) || (req.virt_sb_base == NULL) ||
@@ -2785,13 +2879,12 @@ static int qseecom_load_app(struct qseecom_dev_handle *data, void __user *argp)
 	bool first_time = false;
 
 	/* Copy the relevant information needed for loading the image */
-	if (copy_from_user(&load_img_req,
-				(void __user *)argp,
-				sizeof(struct qseecom_load_img_req))) {
+	K_COPY_FROM_USER(ret, &load_img_req, argp,
+						sizeof(struct qseecom_load_img_req));
+	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return -EFAULT;
 	}
-
 	/* Check and load cmnlib */
 	if (qseecom.qsee_version > QSEEE_VERSION_00) {
 		if (!(qseecom.commonlib_loaded ||
@@ -3009,7 +3102,9 @@ static int qseecom_load_app(struct qseecom_dev_handle *data, void __user *argp)
 		strlcpy(data->client.app_name, load_img_req.img_name,
 					MAX_APP_NAME_SIZE);
 	load_img_req.app_id = app_id;
-	if (copy_to_user(argp, &load_img_req, sizeof(load_img_req))) {
+
+	K_COPY_TO_USER(ret, argp, &load_img_req, sizeof(load_img_req));
+	if (ret) {
 		pr_err("copy_to_user failed\n");
 		ret = -EFAULT;
 		if (first_time) {
@@ -3475,10 +3570,8 @@ static int qseecom_send_service_cmd(struct qseecom_dev_handle *data,
 	size_t req_buf_size;
 
 	/*struct qseecom_command_scm_resp resp;*/
-
-	if (copy_from_user(&req,
-				(void __user *)argp,
-				sizeof(req))) {
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
+	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return -EFAULT;
 	}
@@ -3878,7 +3971,7 @@ static int qseecom_send_cmd(struct qseecom_dev_handle *data, void __user *argp)
 	int ret = 0;
 	struct qseecom_send_cmd_req req;
 
-	ret = copy_from_user(&req, argp, sizeof(req));
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -4375,7 +4468,7 @@ static int __qseecom_send_modfd_cmd(struct qseecom_dev_handle *data,
 	phys_addr_t pa;
 	u8 *va = NULL;
 
-	ret = copy_from_user(&req, argp, sizeof(req));
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -5549,8 +5642,10 @@ static int __qseecom_send_modfd_resp(struct qseecom_dev_handle *data,
 {
 	struct qseecom_send_modfd_listener_resp resp;
 	struct qseecom_registered_listener_list *this_lstnr = NULL;
+	int ret = 0;
 
-	if (copy_from_user(&resp, argp, sizeof(resp))) {
+	K_COPY_FROM_USER(ret, &resp, argp, sizeof(resp));
+	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return -EINVAL;
 	}
@@ -5591,13 +5686,16 @@ static int qseecom_get_qseos_version(struct qseecom_dev_handle *data,
 						void __user *argp)
 {
 	struct qseecom_qseos_version_req req;
+	int ret = 0;
 
-	if (copy_from_user(&req, argp, sizeof(req))) {
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
+	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return -EINVAL;
 	}
 	req.qseos_version = qseecom.qseos_version;
-	if (copy_to_user(argp, &req, sizeof(req))) {
+	K_COPY_TO_USER(ret, argp, &req, sizeof(req));
+	if (ret) {
 		pr_err("copy_to_user failed\n");
 		return -EINVAL;
 	}
@@ -5888,13 +5986,12 @@ static int qseecom_load_external_elf(struct qseecom_dev_handle *data,
 	void *va = NULL;
 
 	/* Copy the relevant information needed for loading the image */
-	if (copy_from_user(&load_img_req,
-				(void __user *)argp,
-				sizeof(struct qseecom_load_img_req))) {
+	K_COPY_FROM_USER(ret, &load_img_req, argp,
+				sizeof(struct qseecom_load_img_req));
+	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return -EFAULT;
 	}
-
 	/* Get the handle of the shared fd */
 	ret = qseecom_vaddr_map(load_img_req.ifd_data_fd, &pa, &va,
 					&sgt, &attach, &len, &dmabuf);
@@ -6059,8 +6156,9 @@ static int qseecom_query_app_loaded(struct qseecom_dev_handle *data,
 	bool found_app = false;
 
 	/* Copy the relevant information needed for loading the image */
-	if (copy_from_user(&query_req, (void __user *)argp,
-				sizeof(struct qseecom_qseos_app_load_query))) {
+	K_COPY_FROM_USER(ret, &query_req, argp,
+				sizeof(struct qseecom_qseos_app_load_query));
+	if (ret) {
 		pr_err("copy_from_user failed\n");
 		ret = -EFAULT;
 		goto exit_free;
@@ -6137,7 +6235,8 @@ static int qseecom_query_app_loaded(struct qseecom_dev_handle *data,
 			spin_unlock_irqrestore(
 				&qseecom.registered_app_list_lock, flags);
 		}
-		if (copy_to_user(argp, &query_req, sizeof(query_req))) {
+		K_COPY_TO_USER(ret, argp, &query_req, sizeof(query_req));
+		if (ret) {
 			pr_err("copy_to_user failed\n");
 			ret = -EFAULT;
 			goto exit_free;
@@ -6543,12 +6642,11 @@ static int qseecom_create_key(struct qseecom_dev_handle *data,
 	struct qseecom_key_select_ireq set_key_ireq;
 	int32_t entries = 0;
 
-	ret = copy_from_user(&create_key_req, argp, sizeof(create_key_req));
+	K_COPY_FROM_USER(ret, &create_key_req, argp, sizeof(create_key_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
 	}
-
 	if (create_key_req.usage < QSEOS_KM_USAGE_DISK_ENCRYPTION ||
 		create_key_req.usage >= QSEOS_KM_USAGE_MAX) {
 		pr_err("unsupported usage %d\n", create_key_req.usage);
@@ -6688,7 +6786,7 @@ static int qseecom_wipe_key(struct qseecom_dev_handle *data,
 	struct qseecom_key_select_ireq clear_key_ireq;
 	int32_t entries = 0;
 
-	ret = copy_from_user(&wipe_key_req, argp, sizeof(wipe_key_req));
+	K_COPY_FROM_USER(ret, &wipe_key_req, argp, sizeof(wipe_key_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -6797,7 +6895,7 @@ static int qseecom_update_key_user_info(struct qseecom_dev_handle *data,
 	struct qseecom_update_key_userinfo_req update_key_req;
 	struct qseecom_key_userinfo_update_ireq ireq;
 
-	ret = copy_from_user(&update_key_req, argp, sizeof(update_key_req));
+	K_COPY_FROM_USER(ret, &update_key_req, argp, sizeof(update_key_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -6871,7 +6969,7 @@ static int qseecom_is_es_activated(void __user *argp)
 	}
 
 	req.is_activated = resp.result;
-	ret = copy_to_user(argp, &req, sizeof(req));
+	K_COPY_TO_USER(ret, argp, &req, sizeof(req));
 	if (ret) {
 		pr_err("copy_to_user failed\n");
 		return ret;
@@ -6932,7 +7030,7 @@ static int qseecom_mdtp_cipher_dip(void __user *argp)
 			break;
 		}
 
-		ret = copy_from_user(&req, argp, sizeof(req));
+		K_COPY_FROM_USER(ret, &req, argp, sizeof(req));
 		if (ret) {
 			pr_err("copy_from_user failed, ret= %d\n", ret);
 			break;
@@ -6956,10 +7054,9 @@ static int qseecom_mdtp_cipher_dip(void __user *argp)
 			break;
 		}
 
-		ret = copy_from_user(tzbufin, (void __user *)req.in_buf,
-					req.in_buf_size);
+		K_COPY_FROM_USER(ret, tzbufin, (void __user *)req.in_buf, req.in_buf_size);
 		if (ret) {
-			pr_err("copy_from_user failed, ret=%d\n", ret);
+			pr_err("copy_from_user failed, ret= %d\n", ret);
 			break;
 		}
 
@@ -7000,8 +7097,7 @@ static int qseecom_mdtp_cipher_dip(void __user *argp)
 
 		/* Copy the output buffer from kernel space to userspace */
 		qtee_shmbridge_flush_shm_buf(&shmout);
-		ret = copy_to_user((void __user *)req.out_buf,
-				tzbufout, req.out_buf_size);
+		K_COPY_TO_USER(ret, (void __user *)req.out_buf, tzbufout, req.out_buf_size);
 		if (ret) {
 			pr_err("copy_to_user failed, ret=%d\n", ret);
 			break;
@@ -7434,8 +7530,7 @@ static int qseecom_qteec_open_session(struct qseecom_dev_handle *data,
 	struct qseecom_qteec_modfd_req req;
 	int ret = 0;
 
-	ret = copy_from_user(&req, argp,
-				sizeof(struct qseecom_qteec_modfd_req));
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(struct qseecom_qteec_modfd_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -7452,7 +7547,7 @@ static int qseecom_qteec_close_session(struct qseecom_dev_handle *data,
 	struct qseecom_qteec_req req;
 	int ret = 0;
 
-	ret = copy_from_user(&req, argp, sizeof(struct qseecom_qteec_req));
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(struct qseecom_qteec_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -7480,8 +7575,7 @@ static int qseecom_qteec_invoke_modfd_cmd(struct qseecom_dev_handle *data,
 	void *req_ptr = NULL;
 	void *resp_ptr = NULL;
 
-	ret = copy_from_user(&req, argp,
-			sizeof(struct qseecom_qteec_modfd_req));
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(struct qseecom_qteec_modfd_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -7619,8 +7713,7 @@ static int qseecom_qteec_request_cancellation(struct qseecom_dev_handle *data,
 	struct qseecom_qteec_modfd_req req;
 	int ret = 0;
 
-	ret = copy_from_user(&req, argp,
-				sizeof(struct qseecom_qteec_modfd_req));
+	K_COPY_FROM_USER(ret, &req, argp, sizeof(struct qseecom_qteec_modfd_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
@@ -8408,6 +8501,9 @@ static int qseecom_release(struct inode *inode, struct file *file)
 static const struct file_operations qseecom_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = qseecom_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = qseecom_ioctl_32bit,
+#endif
 	.open = qseecom_open,
 	.release = qseecom_release
 };
@@ -8922,13 +9018,11 @@ static int qseecom_get_ce_info(struct qseecom_dev_handle *data,
 	bool found = false;
 	struct qseecom_ce_pipe_entry *pce_entry;
 
-	ret = copy_from_user(pinfo, argp,
-				sizeof(struct qseecom_ce_info_req));
+	K_COPY_FROM_USER(ret, pinfo, argp, sizeof(struct qseecom_ce_info_req));
 	if (ret) {
 		pr_err("copy_from_user failed\n");
 		return ret;
 	}
-
 	switch (pinfo->usage) {
 	case QSEOS_KM_USAGE_DISK_ENCRYPTION:
 	case QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION:
@@ -8989,7 +9083,8 @@ static int qseecom_get_ce_info(struct qseecom_dev_handle *data,
 	for (; i < MAX_CE_PIPE_PAIR_PER_UNIT; i++)
 		pinfo->ce_pipe_entry[i].valid = 0;
 
-	if (copy_to_user(argp, pinfo, sizeof(struct qseecom_ce_info_req))) {
+	K_COPY_TO_USER(ret, argp, pinfo, sizeof(struct qseecom_ce_info_req));
+	if (ret) {
 		pr_err("copy_to_user failed\n");
 		ret = -EFAULT;
 	}
@@ -9007,10 +9102,11 @@ static int qseecom_free_ce_info(struct qseecom_dev_handle *data,
 	int i;
 	bool found = false;
 
-	ret = copy_from_user(pinfo, argp,
-				sizeof(struct qseecom_ce_info_req));
-	if (ret)
+	K_COPY_FROM_USER(ret, pinfo, argp, sizeof(struct qseecom_ce_info_req));
+	if (ret) {
+		pr_err("copy_from_user failed\n");
 		return ret;
+	}
 
 	switch (pinfo->usage) {
 	case QSEOS_KM_USAGE_DISK_ENCRYPTION:
@@ -9065,11 +9161,11 @@ static int qseecom_query_ce_info(struct qseecom_dev_handle *data,
 	bool found = false;
 	struct qseecom_ce_pipe_entry *pce_entry;
 
-	ret = copy_from_user(pinfo, argp,
-				sizeof(struct qseecom_ce_info_req));
-	if (ret)
+	K_COPY_FROM_USER(ret, pinfo, argp, sizeof(struct qseecom_ce_info_req));
+	if (ret) {
+		pr_err("copy_from_user failed\n");
 		return ret;
-
+	}
 	switch (pinfo->usage) {
 	case QSEOS_KM_USAGE_DISK_ENCRYPTION:
 	case QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION:
@@ -9127,7 +9223,8 @@ static int qseecom_query_ce_info(struct qseecom_dev_handle *data,
 	for (; i < MAX_CE_PIPE_PAIR_PER_UNIT; i++)
 		pinfo->ce_pipe_entry[i].valid = 0;
 out:
-	if (copy_to_user(argp, pinfo, sizeof(struct qseecom_ce_info_req))) {
+	K_COPY_TO_USER(ret, argp, pinfo, sizeof(struct qseecom_ce_info_req));
+	if (ret) {
 		pr_err("copy_to_user failed\n");
 		ret = -EFAULT;
 	}
