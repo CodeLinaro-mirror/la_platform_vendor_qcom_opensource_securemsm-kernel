@@ -3,7 +3,7 @@
  * QTI CE 32-bit compatibility syscall for 64-bit systems
  *
  * Copyright (c) 2014-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
