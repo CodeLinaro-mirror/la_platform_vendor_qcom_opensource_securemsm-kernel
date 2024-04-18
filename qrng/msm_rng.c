@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2011-2013, 2015, 2017-2021 The Linux Foundation. All rights
  * reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -273,9 +273,17 @@ static int msm_rng_probe(struct platform_device *pdev)
 		if (of_property_read_bool(pdev->dev.of_node,
 					"qcom,no-clock-support"))
 			msm_rng_dev->prng_clk = NULL;
-		else
-			msm_rng_dev->prng_clk = clk_get(&pdev->dev,
-							"km_clk_src");
+		else {
+			if (of_property_read_bool(pdev->dev.of_node,
+					"qcom,msm-rng-iface-clk")) {
+				msm_rng_dev->prng_clk = clk_get(&pdev->dev,
+							"iface_clk");
+			} else {
+				msm_rng_dev->prng_clk = clk_get(&pdev->dev,
+							 "km_clk_src");
+			}
+		}
+
 	}
 
 	if (IS_ERR(msm_rng_dev->prng_clk)) {
