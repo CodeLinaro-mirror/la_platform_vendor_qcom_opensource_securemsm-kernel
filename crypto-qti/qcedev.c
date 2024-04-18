@@ -2639,13 +2639,14 @@ static int qcedev_probe_device(struct platform_device *pdev)
 	}
 	podev->qce = handle;
 
+	qce_enable_clk(podev->qce);
 	rc = qce_set_irqs(podev->qce, false);
 	if (rc) {
 		pr_err("%s: could not disable bam irqs, ret = %d",
 				__func__, rc);
 		goto exit_scale_busbandwidth;
 	}
-
+	qce_disable_clk(podev->qce);
 	rc = icc_set_bw(podev->icc_path, 0, 0);
 	if (rc) {
 		pr_err("%s Unable to set to low bandwidth\n", __func__);
