@@ -164,20 +164,7 @@ static struct cb_object *cb_object_alloc(s64 server_id)
 	return cb_object;
 }
 
-static void mem_object_release(void *dma_buf)
-{
-	/* What's wrong with userspace!? Technically we do not need this.
-	 * However, userspace do not close the dma_buf after using it and for some reason
-	 * waits for the driver to send back the RELEASE callback request.
-	 */
-
-	/* TODO. Add support for memory object release; so we notify the
-	 * userspace for the release of dma_buf from the QTEE.
-	 */
-
-	pr_err("dma_buf released %p\n", dma_buf);
-}
-
+static void mem_object_release(void *private);
 static int get_si_object_from_u_handle(struct smcinvoke_obj *o, struct si_arg *arg)
 {
 	int ret = 0;
@@ -219,7 +206,26 @@ static int get_si_object_from_u_handle(struct smcinvoke_obj *o, struct si_arg *a
 		dma_buf = dma_buf_get(u_handle);
 		if (!IS_ERR(dma_buf)) {
 
-			object = init_si_mem_object_user(dma_buf, mem_object_release, dma_buf);
+			struct cb_object *x_cb;
+
+			/* This is an effort to simulate the invalid fix propagted deep
+			 * in userspace. See: 'mem_object_release'. If IS_ERR(x_cb), we will
+			 * proceed without the mem-object RELEASE but will print a warning
+			 * for leak in 'mem_object_release'.
+			 */
+
+			/* BUG!!! This assumes only callback server is sending a memory object;
+			 * It assumes memory object ALWAYS should belong to a server, i.e.
+			 * 'cb_server_fd' MUST be valid. I can not fix it.
+			 */
+
+			x_cb = cb_object_alloc(o->cb_server_fd);
+			if (!IS_ERR(x_cb))
+				x_cb->u_handle = u_handle;
+
+			object = init_si_mem_object_user(dma_buf, mem_object_release,
+				IS_ERR(x_cb) ? NULL : x_cb);
+
 			if (!object)
 				ret = -EINVAL;
 
@@ -438,6 +444,7 @@ static int marshal_out_req(union smcinvoke_arg args[], struct si_arg u[])
 		if (!err) {
 			void __user *u_addr = u64_to_user_ptr(args[i].b.addr);
 
+			args[i].b.size = u[i].b.size;
 			if (copy_to_user(u_addr, u[i].b.addr, u[i].b.size))
 				err = -1;
 		}
@@ -1039,6 +1046,32 @@ static void cbo_release(struct si_object *object)
 	kfree(cb_object);
 }
 
+
+static void mem_object_release(void *private)
+{
+	/* THIS IS A STUPIDEST IMPLEMENTATION EVER! */
+
+	/* Old smcinvoke driver had a memory leak but rather than fixing it by
+	 * figuring out the root cause they decided it is COOL to send irrelevant
+	 * memory release to userspace to compensate for the leaked memory. Interestingly,
+	 * it has a made up story behind to justify the wrong change, see comments in
+	 * 'process_tzcb_req' this patch:
+	 * https://review-android.quicinc.com/c/platform/vendor/qcom/opensource/securemsm-kernel/+/4382238.
+	 * I WISH I COULD HAVE REVERTED THIS.
+	 */
+
+	struct cb_object *cb_x = private;
+
+	if (cb_x) {
+
+		/* Note 'cb_x->object' has not been isinialized. Do not use it! */
+		pr_info("dma_buf released i.e. cbo-%s%lld\n", cb_x->si->comm, cb_x->u_handle);
+
+		cbo_release(&cb_x->object);
+	} else
+		pr_err("memory leak detected!\n");
+}
+
 static struct si_object_operations cbo_sio_ops = {
 	.release = cbo_release,
 	.notify = cbo_notify,
@@ -1072,8 +1105,16 @@ static long process_accept_req(struct server_info *si, struct smcinvoke_accept *
 			goto wait_on_request;
 
 		cb_txn = get_txn_for_state_transition(si, accept->txn_id, XST_PROCESSED);
-		if (!cb_txn)
-			return -EINVAL;
+		if (!cb_txn) {
+
+			/* We get here, if the invoke thread goes away, e.g. timed out or killed. */
+			/* In correct implementation we should return to userspace for the callback
+			 * server to cleanup. However, the libMinkDescriptor will kill the thread
+			 * if returns error. We stick to the wrong design :(.
+			 */
+
+			goto wait_on_request;
+		}
 
 		errno = accept->result;
 		if (!errno) {
@@ -1209,12 +1250,35 @@ static long server_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 
 		ret = process_accept_req(si, &accept);
-		if (!ret) {
+		if (ret == -ERESTARTSYS) {
+			struct smcinvoke_accept __user *a = (struct smcinvoke_accept __user *)arg;
 
-			/* TODO. We need to do some cleanup for 'process_accept_req'. */
+			/* BAD IOCTL UAPI DESIGN! */
 
-			if (copy_to_user((void __user *)arg, &accept, sizeof(accept)))
+			/* We do this because same IOCTL command has been used for two different
+			 * purposes (submit response + pick request). 'ERESTARTSYS' means we were
+			 * handling second part of the IOCTL when signal arrived.
+			 */
+
+			/* We need to reset 'has_resp' so if the IOCTL call restarted we
+			 * resume from second half of the IOCTL. I did not use an state for 'si'
+			 * as restart is not guaranteed.
+			 */
+
+			if (put_user(0, &a->has_resp))
 				return -EFAULT;
+
+		} else if (!ret) {
+
+			/* We picked a request; and submitted any pending response.*/
+			accept.has_resp = 0;
+
+			if (copy_to_user((void __user *)arg, &accept, sizeof(accept))) {
+
+				/* TODO. We need to do some cleanup for 'process_accept_req'. */
+
+				return -EFAULT;
+			}
 		}
 
 		break;
@@ -1424,6 +1488,8 @@ static int qtee_release(struct inode *nodp, struct file *filp)
 	struct si_object *object = filp->private_data;
 
 	/* The matching 'get_si_object' is in 'get_u_handle_from_si_object'. */
+
+	pr_info("%s released.\n", si_object_name(object));
 
 	put_si_object(object);
 
