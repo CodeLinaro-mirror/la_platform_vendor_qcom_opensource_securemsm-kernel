@@ -2862,6 +2862,11 @@ static long process_invoke_req(struct file *filp, unsigned int cmd,
 		}
 	}
 
+	if (args_buf == NULL) {
+		pr_err("argument is invalid\n");
+		return -EINVAL;
+	}
+
 	if (context_type == SMCINVOKE_OBJ_TYPE_TZ_OBJ &&
 		tzobj->tzhandle == SMCINVOKE_TZ_ROOT_OBJ) {
 		if (req.op == IClientEnv_OP_registerWithCredentials) {
