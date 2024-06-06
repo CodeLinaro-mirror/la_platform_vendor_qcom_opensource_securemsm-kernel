@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "smcinvoke: %s: " fmt, __func__
@@ -96,7 +96,7 @@ static int u_handle_alloc(const char *name, const struct file_operations *fops,
 	fd_install(fd, file);
 	*u_handle = fd;
 
-	pr_info("fd %d assigned for %s.\n", fd, name);
+	pr_debug("fd %d assigned for %s.\n", fd, name);
 
 	return 0;
 }
@@ -164,20 +164,7 @@ static struct cb_object *cb_object_alloc(s64 server_id)
 	return cb_object;
 }
 
-static void mem_object_release(void *dma_buf)
-{
-	/* What's wrong with userspace!? Technically we do not need this.
-	 * However, userspace do not close the dma_buf after using it and for some reason
-	 * waits for the driver to send back the RELEASE callback request.
-	 */
-
-	/* TODO. Add support for memory object release; so we notify the
-	 * userspace for the release of dma_buf from the QTEE.
-	 */
-
-	pr_err("dma_buf released %p\n", dma_buf);
-}
-
+static void mem_object_release(void *private);
 static int get_si_object_from_u_handle(struct smcinvoke_obj *o, struct si_arg *arg)
 {
 	int ret = 0;
@@ -219,7 +206,26 @@ static int get_si_object_from_u_handle(struct smcinvoke_obj *o, struct si_arg *a
 		dma_buf = dma_buf_get(u_handle);
 		if (!IS_ERR(dma_buf)) {
 
-			object = init_si_mem_object_user(dma_buf, mem_object_release, dma_buf);
+			struct cb_object *x_cb;
+
+			/* This is an effort to simulate the invalid fix propagted deep
+			 * in userspace. See: 'mem_object_release'. If IS_ERR(x_cb), we will
+			 * proceed without the mem-object RELEASE but will print a warning
+			 * for leak in 'mem_object_release'.
+			 */
+
+			/* BUG!!! This assumes only callback server is sending a memory object;
+			 * It assumes memory object ALWAYS should belong to a server, i.e.
+			 * 'cb_server_fd' MUST be valid. I can not fix it.
+			 */
+
+			x_cb = cb_object_alloc(o->cb_server_fd);
+			if (!IS_ERR(x_cb))
+				x_cb->u_handle = u_handle;
+
+			object = init_si_mem_object_user(dma_buf, mem_object_release,
+				IS_ERR(x_cb) ? NULL : x_cb);
+
 			if (!object)
 				ret = -EINVAL;
 
@@ -340,6 +346,48 @@ static int get_u_handle_from_si_object(struct si_object *object,
  * 'marshal_in_cb_req' and 'marshal_out_cb_req' are used for QTEE request.
  */
 
+static void marshal_in_req_cleanup(struct si_arg u[], int notify)
+{
+	int i;
+	struct si_object *object;
+
+	for (i = 0; u[i].type; i++) {
+		switch (u[i].type) {
+		case SI_AT_IB:
+		case SI_AT_OB:
+			kfree(u[i].b.addr);
+
+			break;
+		case SI_AT_IO:
+
+			object = u[i].o;
+
+			/* For cb_objects, we will notify userspace of its release.
+			 * On failure, we should not do that.
+			 */
+
+			if (is_cb_object(object))
+				to_cb_object(object)->notify_on_release = notify;
+
+			/* For object of type SI_OT_USER, 'get_si_object_from_u_handle' does
+			 * not call 'get_si_object' before returning (i.e. ref == 1). Replace
+			 * it with NULL_SI_OBJECT as after 'put_si_object', u[i].o is invalid.
+			 */
+
+			else if (typeof_si_object(object) == SI_OT_USER)
+				u[i].o = NULL_SI_OBJECT;
+
+			put_si_object(object);
+
+			break;
+		case SI_AT_OO:
+		default:
+
+			break;
+		}
+	}
+}
+
 static int marshal_in_req(struct si_arg u[], union smcinvoke_arg args[], u32 counts)
 {
 	int i, err = 0;
@@ -389,37 +437,14 @@ static int marshal_in_req(struct si_arg u[], union smcinvoke_arg args[], u32 cou
 	/* Release whatever resources we got in 'u'. */
 	/* Return with clean slate. */
 
+	marshal_in_req_cleanup(u, 0);
+
+	/* Here, drop QTEE istances; on Success QTEE does that. */
+
 	for (i = 0; u[i].type; i++) {
-		switch (u[i].type) {
-		case SI_AT_IB:
-		case SI_AT_OB:
-			kfree(u[i].b.addr);
-
-			break;
-		case SI_AT_IO:
-
-			/* For cb_objects, we will notify userspace of its release.
-			 * On failure, we should not do that.
-			 */
-
-			if (is_cb_object(u[i].o))
-				to_cb_object(u[i].o)->notify_on_release = 0;
-
-			/* 'get_si_object_from_u_handle' calls 'get_si_object' before
-			 * returning (i.e. ref == 2) for all objects except SI_OT_USER.
-			 * One reference for QTEE and one for driver itself.
-			 */
-
+		if (u[i].type == SI_AT_IO &&
+			typeof_si_object(u[i].o) != SI_OT_USER)
 			put_si_object(u[i].o);
-			if (typeof_si_object(u[i].o) != SI_OT_USER)
-				put_si_object(u[i].o);
-
-			break;
-		case SI_AT_OO:
-		default:
-
-			break;
-		}
 	}
 
 	return -1;
@@ -438,6 +463,7 @@ static int marshal_out_req(union smcinvoke_arg args[], struct si_arg u[])
 		if (!err) {
 			void __user *u_addr = u64_to_user_ptr(args[i].b.addr);
 
+			args[i].b.size = u[i].b.size;
 			if (copy_to_user(u_addr, u[i].b.addr, u[i].b.size))
 				err = -1;
 		}
@@ -659,9 +685,10 @@ static int marshal_out_cb_req(struct si_arg u[], union smcinvoke_arg args[])
 			 * One reference for QTEE and one for driver itself.
 			 */
 
-			put_si_object(u[i].o);
 			if (typeof_si_object(u[i].o) != SI_OT_USER)
 				put_si_object(u[i].o);
+
+			put_si_object(u[i].o);
 
 			break;
 		case SI_AT_IB:
@@ -816,8 +843,11 @@ static struct cb_txn *get_txn_for_state_transition_locked(struct server_info *si
 				break;
 			}
 
-		} else
+		} else {
 			pr_err("invalid state transition %d\n", state);
+
+			break;
+		}
 	}
 
 	if (cb_txn && !kref_get_unless_zero(&cb_txn->refcount))
@@ -935,7 +965,7 @@ static int cbo_dispatch(unsigned int context_id,
 
 	/* START a Transaction. */
 
-	pr_info("%s invocation with %d arguments and op %lu (context_id %u).\n",
+	pr_debug("%s invocation with %d arguments and op %lu (context_id %u).\n",
 		si_object_name(object), nargs, cb_txn->op, context_id);
 
 	if (queue_txn(cb_object->si, cb_txn)) {
@@ -966,12 +996,12 @@ static int cbo_dispatch(unsigned int context_id,
 
 	errno = set_txn_state(cb_txn, XST_TIMEDOUT) ? cb_txn->errno : -EINVAL;
 
-	pr_info("%s invocation returned with %d (context_id %u).\n",
+	pr_debug("%s invocation returned with %d (context_id %u).\n",
 		si_object_name(object), errno, context_id);
 
 	if (errno) {
-
-		/* We do not receive any notification; do 'cbo_notify' here. */
+		pr_err("%s invocation returned with %d (context_id %u).\n",
+			si_object_name(object), errno, context_id);
 
 		dequeue_and_put_txn(cb_txn);
 	}
@@ -1002,9 +1032,10 @@ static void cbo_notify(unsigned int context_id, struct si_object *object, int st
 				 * once.
 				 */
 
-				put_si_object(u[i].o);
 				if (status && (typeof_si_object(u[i].o) != SI_OT_USER))
 					put_si_object(u[i].o);
+
+				put_si_object(u[i].o);
 
 				break;
 			case SI_AT_IB:
@@ -1036,6 +1067,32 @@ static void cbo_release(struct si_object *object)
 	kfree(cb_object);
 }
 
+
+static void mem_object_release(void *private)
+{
+	/* THIS IS A STUPIDEST IMPLEMENTATION EVER! */
+
+	/* Old smcinvoke driver had a memory leak but rather than fixing it by
+	 * figuring out the root cause they decided it is COOL to send irrelevant
+	 * memory release to userspace to compensate for the leaked memory. Interestingly,
+	 * it has a made up story behind to justify the wrong change, see comments in
+	 * 'process_tzcb_req' this patch:
+	 * https://review-android.quicinc.com/c/platform/vendor/qcom/opensource/securemsm-kernel/+/4382238.
+	 * I WISH I COULD HAVE REVERTED THIS.
+	 */
+
+	struct cb_object *cb_x = private;
+
+	if (cb_x) {
+
+		/* Note 'cb_x->object' has not been isinialized. Do not use it! */
+		pr_debug("dma_buf released i.e. cbo-%s%lld\n", cb_x->si->comm, cb_x->u_handle);
+
+		cbo_release(&cb_x->object);
+	} else
+		pr_err("memory leak detected!\n");
+}
+
 static struct si_object_operations cbo_sio_ops = {
 	.release = cbo_release,
 	.notify = cbo_notify,
@@ -1062,28 +1119,40 @@ static long process_accept_req(struct server_info *si, struct smcinvoke_accept *
 	if (accept->has_resp) {
 		int i, errno = 0;
 
-		pr_info("%s submit response (context_id %llu)\n", si->comm, accept->txn_id);
+		pr_debug("%s submit response (context_id %llu)\n", si->comm, accept->txn_id);
 
 		/* 'CONTEXT_ID_ANY' context ID?! Ignore. */
 		if (!accept->txn_id)
 			goto wait_on_request;
 
 		cb_txn = get_txn_for_state_transition(si, accept->txn_id, XST_PROCESSED);
-		if (!cb_txn)
-			return -EINVAL;
+		if (!cb_txn) {
 
-		/* Only copy arguments that we expect, i.e. 'u_args_sz'. */
-		if (copy_from_user(cb_txn->u_args,
-			(void __user *)accept->buf_addr, cb_txn->u_args_sz)) {
+			/* We get here, if the invoke thread goes away, e.g. timed out or killed. */
+			/* In correct implementation we should return to userspace for the callback
+			 * server to cleanup. However, the libMinkDescriptor will kill the thread
+			 * if returns error. We stick to the wrong design :(.
+			 */
 
-			errno = -EFAULT;
-		} else {
-			if (marshal_out_cb_req(cb_txn->args, cb_txn->u_args))
-				errno = -EINVAL;
+			goto wait_on_request;
 		}
 
-		/* Override result if we can not parse the response; return 'errno' to user. */
-		cb_txn->errno = errno ?: accept->result;
+		errno = accept->result;
+		if (!errno) {
+			/* Only parse arguments on SUCCESS. */
+
+			/* Only copy arguments that we expect, i.e. 'u_args_sz'. */
+			if (copy_from_user(cb_txn->u_args,
+				(void __user *)accept->buf_addr, cb_txn->u_args_sz)) {
+
+				errno = -EFAULT;
+			} else {
+				if (marshal_out_cb_req(cb_txn->args, cb_txn->u_args))
+					errno = -EINVAL;
+			}
+		}
+
+		cb_txn->errno = errno;
 
 		/* Try to notify the invoke thread. */
 		/* If 'set_txn_state' fails, e.g. invoke thread TIMEDOUT
@@ -1102,9 +1171,10 @@ static long process_accept_req(struct server_info *si, struct smcinvoke_accept *
 					if (is_cb_object(u[i].o))
 						to_cb_object(u[i].o)->notify_on_release = 0;
 
-					put_si_object(u[i].o);
 					if (typeof_si_object(u[i].o) != SI_OT_USER)
 						put_si_object(u[i].o);
+
+					put_si_object(u[i].o);
 
 					break;
 				case SI_AT_IB:
@@ -1123,7 +1193,7 @@ static long process_accept_req(struct server_info *si, struct smcinvoke_accept *
 
 		put_txn(cb_txn);
 
-		if (errno)
+		if (errno && !accept->result)
 			return errno;
 
 		/* SUCCESS submitting the response. */
@@ -1134,7 +1204,7 @@ wait_on_request:
 
 	do {
 		if (wait_for_pending_txn(si, &cb_txn)) {
-			pr_info("%s received a signal.\n", si->comm);
+			pr_debug("%s received a signal.\n", si->comm);
 
 			return -ERESTARTSYS;
 		}
@@ -1152,7 +1222,7 @@ wait_on_request:
 			goto out_failed;
 		}
 
-		pr_info("%s pick request with arguments (%04x) and op %d (context_id %llu)\n",
+		pr_debug("%s pick request with arguments (%04x) and op %d (context_id %llu)\n",
 			si->comm, accept->counts, accept->op, accept->txn_id);
 
 		if (copy_to_user((void __user *)accept->buf_addr,
@@ -1202,12 +1272,35 @@ static long server_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 
 		ret = process_accept_req(si, &accept);
-		if (!ret) {
+		if (ret == -ERESTARTSYS) {
+			struct smcinvoke_accept __user *a = (struct smcinvoke_accept __user *)arg;
 
-			/* TODO. We need to do some cleanup for 'process_accept_req'. */
+			/* BAD IOCTL UAPI DESIGN! */
 
-			if (copy_to_user((void __user *)arg, &accept, sizeof(accept)))
+			/* We do this because same IOCTL command has been used for two different
+			 * purposes (submit response + pick request). 'ERESTARTSYS' means we were
+			 * handling second part of the IOCTL when signal arrived.
+			 */
+
+			/* We need to reset 'has_resp' so if the IOCTL call restarted we
+			 * resume from second half of the IOCTL. I did not use an state for 'si'
+			 * as restart is not guaranteed.
+			 */
+
+			if (put_user(0, &a->has_resp))
 				return -EFAULT;
+
+		} else if (!ret) {
+
+			/* We picked a request; and submitted any pending response.*/
+			accept.has_resp = 0;
+
+			if (copy_to_user((void __user *)arg, &accept, sizeof(accept))) {
+
+				/* TODO. We need to do some cleanup for 'process_accept_req'. */
+
+				return -EFAULT;
+			}
 		}
 
 		break;
@@ -1275,7 +1368,7 @@ static const struct file_operations server_fops = {
 
 static long process_invoke_req(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	int ret;
+	int i, ret;
 
 	struct si_object *object = filp->private_data;
 
@@ -1297,11 +1390,20 @@ static long process_invoke_req(struct file *filp, unsigned int cmd, unsigned lon
 
 	if (typeof_si_object(object) == SI_OT_ROOT) {
 		if ((u_req.op == IClientEnv_OP_notifyDomainChange) ||
-			(u_req.op == IClientEnv_OP_registerWithCredentials) ||
 			(u_req.op == IClientEnv_OP_adciAccept) ||
-			(u_req.op == IClientEnv_OP_adciShutdown))
+			(u_req.op == IClientEnv_OP_adciShutdown)) {
+			pr_err("invalid rootenv op\n");
 
 			return -EINVAL;
+		}
+
+		if (u_req.op == IClientEnv_OP_registerWithCredentials) {
+			if (u_req.counts != OBJECT_COUNTS_PACK(0, 0, 1, 1)) {
+				pr_err("IClientEnv_OP_registerWithCredentials: incorrect number of arguments.\n");
+
+				return -EINVAL;
+			}
+		}
 	}
 
 	if (u_req.argsize != sizeof(union smcinvoke_arg))
@@ -1336,7 +1438,18 @@ static long process_invoke_req(struct file *filp, unsigned int cmd, unsigned lon
 		goto out_failed;
 	}
 
-	pr_info("%s object invocation with %d arguments (%04x) and op %d.\n",
+	if (typeof_si_object(object) == SI_OT_ROOT) {
+		if (u_req.op == IClientEnv_OP_registerWithCredentials) {
+			if (U_HANDLE_IS_NULL(u_args[0].o.fd)) {
+				pr_err("IClientEnv_OP_registerWithCredentials: privileged credential.\n");
+
+				ret = -EINVAL;
+				goto out_failed;
+			}
+		}
+	}
+
+	pr_debug("%s object invocation with %d arguments (%04x) and op %d.\n",
 		si_object_name(object), u_args_nr, u_req.counts, u_req.op);
 
 	/* + INITIATE an invocation. */
@@ -1348,11 +1461,36 @@ static long process_invoke_req(struct file *filp, unsigned int cmd, unsigned lon
 		goto out_failed;
 	}
 
+	/* TODO. Move this initialization to SI-CORE. */
+	u_req.result = OBJECT_ERROR_INVALID;
+
 	ret = si_object_do_invoke(oic, object, u_req.op, u, &u_req.result);
 	if (ret) {
-		pr_err("si_object_do_invoke failed with %d.\n", ret);
+		pr_err("si_object_do_invoke failed %d, %d.\n", ret, u_req.result);
 
-		/* TODO. Cleanup; on success 'marshal_out_req' does the cleanup. */
+		if (u_req.result) {
+			if (ret == -EINVAL || ret == -ENOMEM ||	ret == -ENOSPC) {
+
+				/* SI-CORE did not even starts the invocation. */
+
+				marshal_in_req_cleanup(u, 0);
+
+				for (i = 0; u[i].type; i++) {
+					if (u[i].type == SI_AT_IO &&
+						typeof_si_object(u[i].o) != SI_OT_USER)
+						put_si_object(u[i].o);
+				}
+
+				goto out_failed;
+			}
+		}
+
+		/* SI-CORE made an unsuccessful invocation. */
+		/* ret == -EINVAL || ret == -ENOMEM && !u_req.result: Marshal out failed.
+		 * ret == -EAGAIN || ret == -ENODEV: QTEE communication failed.
+		 */
+
+		marshal_in_req_cleanup(u, 0);
 
 		goto out_failed;
 	}
@@ -1370,6 +1508,14 @@ static long process_invoke_req(struct file *filp, unsigned int cmd, unsigned lon
 
 			goto out_failed;
 		}
+	} else {
+
+		/* SI-CORE made a successful invocation but QTEE failed.
+		 * We still need to put temporary references we hold from 'marshal_in_req';
+		 * QTEE will release it's own. 'notify == 1' as we return success to user.
+		 */
+
+		marshal_in_req_cleanup(u, 1);
 	}
 
 	/* Copy u_req.result back! */
@@ -1379,7 +1525,7 @@ static long process_invoke_req(struct file *filp, unsigned int cmd, unsigned lon
 		goto out_failed;
 	}
 
-	pr_info("%s object invocation returned with %d.\n",
+	pr_debug("%s object invocation returned with %d.\n",
 		si_object_name(object), u_req.result);
 
 	ret = 0;
@@ -1417,6 +1563,8 @@ static int qtee_release(struct inode *nodp, struct file *filp)
 	struct si_object *object = filp->private_data;
 
 	/* The matching 'get_si_object' is in 'get_u_handle_from_si_object'. */
+
+	pr_debug("%s released.\n", si_object_name(object));
 
 	put_si_object(object);
 

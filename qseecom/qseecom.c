@@ -55,9 +55,6 @@
 #endif
 #include "misc/qseecomi.h"
 
-#if (LINUX_VERSION_CODE <= KERNEL_VERSION(6,0,0))
-#define KERNEL_VERSION_LEGACY
-#endif
 #if IS_ENABLED(CONFIG_COMPAT)
 #include "qseecom_32bit_impl.h"
 #endif
@@ -505,6 +502,15 @@ static struct qseecom_key_id_usage_desc key_id_array[] = {
 	},
 };
 
+struct qseecom_dma_buf_vmap_data {
+#if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+	struct iosys_map map;
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	struct dma_buf_map map;
+#endif
+	void *vaddr;
+};
+
 /* Function proto types */
 static int qsee_vote_for_clock(struct qseecom_dev_handle *, int32_t);
 static void qsee_disable_clock_vote(struct qseecom_dev_handle *, int32_t);
@@ -582,6 +588,73 @@ static char *__qseecom_alloc_tzbuf(uint32_t size,
 static void __qseecom_free_tzbuf(struct qtee_shm *shm)
 {
 	qtee_shmbridge_free_shm(shm);
+}
+
+static void qseecom_dma_buf_map_init_vaddr_wrapper(void *vaddr,
+				struct qseecom_dma_buf_vmap_data *vmap)
+{
+#if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+	vmap->map = (struct iosys_map) IOSYS_MAP_INIT_VADDR(vaddr);
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	vmap->map = (struct dma_buf_map) DMA_BUF_MAP_INIT_VADDR(vaddr);
+#else
+	pr_info("not required to initialize\n");
+#endif
+}
+
+static int qseecom_dma_buf_vmap_wrapper(struct dma_buf *dmabuf,
+				struct qseecom_dma_buf_vmap_data *vmap)
+{
+	int ret = 0;
+
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	ret = dma_buf_vmap_unlocked(dmabuf, &vmap->map);
+	vmap->vaddr = vmap->map.vaddr;
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	ret = dma_buf_vmap(dmabuf, &vmap->map);
+	vmap->vaddr = vmap->map.vaddr;
+#else
+	vmap->vaddr = dma_buf_vmap(dmabuf);
+	if (!vmap->vaddr)
+		ret = -EINVAL;
+#endif
+	return ret;
+}
+
+static void qseecom_dma_buf_vunmap_wrapper(struct dma_buf *dmabuf,
+				struct qseecom_dma_buf_vmap_data *vmap)
+{
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	dma_buf_vunmap_unlocked(dmabuf, &vmap->map);
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+	dma_buf_vunmap(dmabuf, &vmap->map);
+#else
+	dma_buf_vunmap(dmabuf, vmap->vaddr);
+#endif
+}
+
+static struct sg_table *qseecom_dma_buf_map_attachment_wrapper(
+				struct dma_buf_attachment *attachment,
+				enum dma_data_direction  direction)
+{
+	struct sg_table *sg_table;
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	sg_table = dma_buf_map_attachment_unlocked(attachment, direction);
+#else
+	sg_table = dma_buf_map_attachment(attachment, direction);
+#endif
+	return sg_table;
+}
+
+static void qseecom_dma_buf_unmap_attachment_wrapper(struct dma_buf_attachment *attach,
+				struct sg_table *sg_table,
+				enum dma_data_direction direction)
+{
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	dma_buf_unmap_attachment_unlocked(attach, sg_table, direction);
+#else
+	dma_buf_unmap_attachment(attach, sg_table, direction);
+#endif
 }
 
 static int qseecom_scm_call2(uint32_t svc_id, uint32_t tz_cmd_id,
@@ -1407,10 +1480,10 @@ static int qseecom_dmabuf_map(int ion_fd, struct sg_table **sgt,
 		goto err_put;
 	}
 
-	new_sgt = dma_buf_map_attachment(new_attach, DMA_BIDIRECTIONAL);
+	new_sgt = qseecom_dma_buf_map_attachment_wrapper(new_attach, DMA_BIDIRECTIONAL);
 	if (IS_ERR_OR_NULL(new_sgt)) {
 		ret = PTR_ERR(new_sgt);
-		pr_err("dma_buf_map_attachment for ion_fd %d failed ret = %d\n",
+		pr_err("qseecom_dma_buf_map_attachment_wrapper for ion_fd %d failed ret = %d\n",
 				ion_fd, ret);
 		goto err_detach;
 	}
@@ -1426,7 +1499,7 @@ static int qseecom_dmabuf_map(int ion_fd, struct sg_table **sgt,
 	return ret;
 
 err_unmap_attachment:
-	dma_buf_unmap_attachment(new_attach, new_sgt, DMA_BIDIRECTIONAL);
+	qseecom_dma_buf_unmap_attachment_wrapper(new_attach, new_sgt, DMA_BIDIRECTIONAL);
 err_detach:
 	dma_buf_detach(new_dma_buf, new_attach);
 err_put:
@@ -1439,7 +1512,7 @@ static void qseecom_dmabuf_unmap(struct sg_table *sgt,
 			struct dma_buf_attachment *attach,
 			struct dma_buf *dmabuf)
 {
-	dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
+	qseecom_dma_buf_unmap_attachment_wrapper(attach, sgt, DMA_BIDIRECTIONAL);
 	dma_buf_detach(dmabuf, attach);
 	dma_buf_put(dmabuf);
 }
@@ -1453,11 +1526,7 @@ static int qseecom_vaddr_map(int ion_fd,
 {
 	struct dma_buf *new_dma_buf = NULL;
 	struct dma_buf_attachment *new_attach = NULL;
-#ifdef KERNEL_VERSION_LEGACY
-	struct dma_buf_map new_dma_buf_map = {0};
-#else
-	struct iosys_map new_dma_buf_map = {0};
-#endif
+	struct qseecom_dma_buf_vmap_data new_dma_buf_map = {0};
 	struct sg_table *new_sgt = NULL;
 	void *new_va = NULL;
 	int ret = 0;
@@ -1474,10 +1543,10 @@ static int qseecom_vaddr_map(int ion_fd,
 	*sb_length = new_sgt->sgl->length;
 	//Invalidate the Buffer
 	dma_buf_begin_cpu_access(new_dma_buf, DMA_BIDIRECTIONAL);
-	ret = dma_buf_vmap(new_dma_buf, &new_dma_buf_map);
+	ret = qseecom_dma_buf_vmap_wrapper(new_dma_buf, &new_dma_buf_map);
 	new_va = ret ? NULL : new_dma_buf_map.vaddr;
 	if (!new_va) {
-		pr_err("dma_buf_vmap failed\n");
+		pr_err("qseecom_dma_buf_vmap_wrapper failed\n");
 		ret = -ENOMEM;
 		goto err_unmap;
 	}
@@ -1501,16 +1570,15 @@ static void qseecom_vaddr_unmap(void *vaddr, struct sg_table *sgt,
 		struct dma_buf_attachment *attach,
 		struct dma_buf *dmabuf)
 {
-#ifdef KERNEL_VERSION_LEGACY
-	struct dma_buf_map  dmabufmap = DMA_BUF_MAP_INIT_VADDR(vaddr);
-#else
-	struct iosys_map  dmabufmap = IOSYS_MAP_INIT_VADDR(vaddr);
-#endif
+	struct qseecom_dma_buf_vmap_data dmabufmap = {0};
+
+	//Initialize dmabuf map
+	qseecom_dma_buf_map_init_vaddr_wrapper(vaddr, &dmabufmap);
 
 	if (!dmabuf || !vaddr || !sgt || !attach)
 		return;
-	pr_err("Trying to unmap vaddr");
-	dma_buf_vunmap(dmabuf, &dmabufmap);
+	pr_debug("Trying to unmap vaddr\n");
+	qseecom_dma_buf_vunmap_wrapper(dmabuf, &dmabufmap);
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	qseecom_dmabuf_unmap(sgt, attach, dmabuf);
 }
@@ -5085,7 +5153,7 @@ static int __qseecom_start_app(struct qseecom_handle **handle,
 	if (atomic_read(&qseecom.qseecom_state) != QSEECOM_STATE_READY) {
 		pr_err("Not allowed to be called in %d state\n",
 				atomic_read(&qseecom.qseecom_state));
-		return -EPERM;
+		return -EAGAIN;
 	}
 	if (!app_name) {
 		pr_err("failed to get the app name\n");
@@ -5248,7 +5316,7 @@ static int __qseecom_shutdown_app(struct qseecom_handle **handle)
 	if (atomic_read(&qseecom.qseecom_state) != QSEECOM_STATE_READY) {
 		pr_err("Not allowed to be called in %d state\n",
 				atomic_read(&qseecom.qseecom_state));
-		return -EPERM;
+		return -EAGAIN;
 	}
 
 	if ((handle == NULL)  || (*handle == NULL)) {
@@ -5302,7 +5370,7 @@ static int __qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
 	if (atomic_read(&qseecom.qseecom_state) != QSEECOM_STATE_READY) {
 		pr_err("Not allowed to be called in %d state\n",
 				atomic_read(&qseecom.qseecom_state));
-		return -EPERM;
+		return -EAGAIN;
 	}
 
 	if (handle == NULL) {
@@ -7691,6 +7759,11 @@ long qseecom_ioctl(struct file *file,
 		pr_err("Aborting qseecom driver\n");
 		return -ENODEV;
 	}
+	if (atomic_read(&qseecom.qseecom_state) != QSEECOM_STATE_READY) {
+		pr_err("Not allowed to be called in %d state\n",
+				atomic_read(&qseecom.qseecom_state));
+		return -EAGAIN;
+	}
 	if (cmd != QSEECOM_IOCTL_RECEIVE_REQ &&
 		cmd != QSEECOM_IOCTL_SEND_RESP_REQ &&
 		cmd != QSEECOM_IOCTL_SEND_MODFD_RESP &&
@@ -8443,7 +8516,7 @@ static const struct file_operations qseecom_fops = {
 static int __qseecom_init_clk(enum qseecom_ce_hw_instance ce)
 {
 	int rc = 0;
-	struct device *pdev;
+	struct device *dev;
 	struct qseecom_clk *qclk;
 	char *core_clk_src = NULL;
 	char *core_clk = NULL;
@@ -8482,10 +8555,10 @@ static int __qseecom_init_clk(enum qseecom_ce_hw_instance ce)
 		return 0;
 	}
 
-	pdev = qseecom.pdev;
+	dev = qseecom.dev;
 
 	/* Get CE3 src core clk. */
-	qclk->ce_core_src_clk = clk_get(pdev, core_clk_src);
+	qclk->ce_core_src_clk = clk_get(dev, core_clk_src);
 	if (!IS_ERR(qclk->ce_core_src_clk)) {
 		rc = clk_set_rate(qclk->ce_core_src_clk,
 					qseecom.ce_opp_freq_hz);
@@ -8502,7 +8575,7 @@ static int __qseecom_init_clk(enum qseecom_ce_hw_instance ce)
 	}
 
 	/* Get CE core clk */
-	qclk->ce_core_clk = clk_get(pdev, core_clk);
+	qclk->ce_core_clk = clk_get(dev, core_clk);
 	if (IS_ERR(qclk->ce_core_clk)) {
 		rc = PTR_ERR(qclk->ce_core_clk);
 		pr_err("Unable to get CE core clk\n");
@@ -8512,7 +8585,7 @@ static int __qseecom_init_clk(enum qseecom_ce_hw_instance ce)
 	}
 
 	/* Get CE Interface clk */
-	qclk->ce_clk = clk_get(pdev, iface_clk);
+	qclk->ce_clk = clk_get(dev, iface_clk);
 	if (IS_ERR(qclk->ce_clk)) {
 		rc = PTR_ERR(qclk->ce_clk);
 		pr_err("Unable to get CE interface clk\n");
@@ -8523,7 +8596,7 @@ static int __qseecom_init_clk(enum qseecom_ce_hw_instance ce)
 	}
 
 	/* Get CE AXI clk */
-	qclk->ce_bus_clk = clk_get(pdev, bus_clk);
+	qclk->ce_bus_clk = clk_get(dev, bus_clk);
 	if (IS_ERR(qclk->ce_bus_clk)) {
 		rc = PTR_ERR(qclk->ce_bus_clk);
 		pr_err("Unable to get CE BUS interface clk\n");
@@ -9373,6 +9446,37 @@ static int qseecom_register_reboot_notifier(void)
 	return rc;
 }
 
+static int qseecom_create_device(struct platform_device *pdev)
+{
+	int rc = 0;
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	qseecom.driver_class = class_create(QSEECOM_DEV);
+#else
+	qseecom.driver_class = class_create(THIS_MODULE, QSEECOM_DEV);
+#endif
+	if (IS_ERR(qseecom.driver_class)) {
+		rc = PTR_ERR(qseecom.driver_class);
+		pr_err("class_create failed %x\n", rc);
+		return rc;
+	}
+	qseecom.pdev = device_create(qseecom.driver_class, NULL,
+			qseecom.qseecom_device_no, NULL,
+			QSEECOM_DEV);
+	if (IS_ERR(qseecom.pdev)) {
+		pr_err("class_device_create failed %d\n", rc);
+		rc = PTR_ERR(qseecom.pdev);
+		goto exit_destroy_class;
+	}
+
+	qseecom.pdev->of_node = pdev->dev.of_node;
+
+	return 0;
+
+exit_destroy_class:
+	class_destroy(qseecom.driver_class);
+	return rc;
+}
+
 static int qseecom_init_dev(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -9383,24 +9487,6 @@ static int qseecom_init_dev(struct platform_device *pdev)
 		pr_err("alloc_chrdev_region failed %d\n", rc);
 		return rc;
 	}
-#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
-	qseecom.driver_class = class_create(QSEECOM_DEV);
-#else
-	qseecom.driver_class = class_create(THIS_MODULE, QSEECOM_DEV);
-#endif
-	if (IS_ERR(qseecom.driver_class)) {
-		rc = PTR_ERR(qseecom.driver_class);
-		pr_err("class_create failed %x\n", rc);
-		goto exit_unreg_chrdev_region;
-	}
-	qseecom.pdev = device_create(qseecom.driver_class, NULL,
-			qseecom.qseecom_device_no, NULL,
-			QSEECOM_DEV);
-	if (IS_ERR(qseecom.pdev)) {
-		pr_err("class_device_create failed %d\n", rc);
-		rc = PTR_ERR(qseecom.pdev);
-		goto exit_destroy_class;
-	}
 	cdev_init(&qseecom.cdev, &qseecom_fops);
 	qseecom.cdev.owner = THIS_MODULE;
 
@@ -9408,7 +9494,7 @@ static int qseecom_init_dev(struct platform_device *pdev)
 			MKDEV(MAJOR(qseecom.qseecom_device_no), 0), 1);
 	if (rc < 0) {
 		pr_err("cdev_add failed %d\n", rc);
-		goto exit_destroy_device;
+		goto exit_unreg_chrdev_region;
 	}
 	qseecom.dev = &pdev->dev;
 	rc = dma_set_mask(qseecom.dev, DMA_BIT_MASK(64));
@@ -9418,7 +9504,7 @@ static int qseecom_init_dev(struct platform_device *pdev)
 	}
 	if (!qseecom.dev->dma_parms) {
 		qseecom.dev->dma_parms =
-			kzalloc(sizeof(*qseecom.dev->dma_parms), GFP_KERNEL);
+			devm_kzalloc(qseecom.dev, sizeof(*qseecom.dev->dma_parms), GFP_KERNEL);
 		if (!qseecom.dev->dma_parms) {
 			rc = -ENOMEM;
 			goto exit_del_cdev;
@@ -9448,10 +9534,6 @@ static int qseecom_init_dev(struct platform_device *pdev)
 
 exit_del_cdev:
 	cdev_del(&qseecom.cdev);
-exit_destroy_device:
-	device_destroy(qseecom.driver_class, qseecom.qseecom_device_no);
-exit_destroy_class:
-	class_destroy(qseecom.driver_class);
 exit_unreg_chrdev_region:
 	unregister_chrdev_region(qseecom.qseecom_device_no, 1);
 
@@ -9460,13 +9542,15 @@ exit_unreg_chrdev_region:
 
 static void qseecom_deinit_dev(void)
 {
-	kfree(qseecom.dev->dma_parms);
-	qseecom.dev->dma_parms = NULL;
 	unregister_reboot_notifier(&(qseecom.reboot_nb));
 	cdev_del(&qseecom.cdev);
+	unregister_chrdev_region(qseecom.qseecom_device_no, 1);
+}
+
+static void qseecom_destroy_device(void)
+{
 	device_destroy(qseecom.driver_class, qseecom.qseecom_device_no);
 	class_destroy(qseecom.driver_class);
-	unregister_chrdev_region(qseecom.qseecom_device_no, 1);
 }
 
 static int qseecom_init_control(void)
@@ -9516,7 +9600,6 @@ static int qseecom_parse_dt(struct platform_device *pdev)
 		pr_err("NULL of_node\n");
 		return -ENODEV;
 	}
-	qseecom.pdev->of_node = pdev->dev.of_node;
 	qseecom.support_bus_scaling =
 		of_property_read_bool((&pdev->dev)->of_node,
 					"qcom,support-bus-scaling");
@@ -9664,17 +9747,17 @@ static void qseecom_deregister_shmbridge(void)
 
 static int qseecom_probe(struct platform_device *pdev)
 {
-	int rc;
+	int rc = 0;
 
 	rc = qseecom_register_shmbridge(pdev);
 	if (rc)
 		return rc;
+	rc = qseecom_init_control();
+	if (rc)
+		goto exit_unregister_bridge;
 	rc = qseecom_init_dev(pdev);
 	if (rc)
 		goto exit_unregister_bridge;
-	rc = qseecom_init_control();
-	if (rc)
-		goto exit_deinit_dev;
 	rc = qseecom_parse_dt(pdev);
 	if (rc)
 		goto exit_deinit_dev;
@@ -9691,6 +9774,9 @@ static int qseecom_probe(struct platform_device *pdev)
 	if (rc)
 		goto exit_deinit_bus;
 	rc = qseecom_create_kthreads();
+	if (rc)
+		goto exit_deinit_bus;
+	rc = qseecom_create_device(pdev);
 	if (rc)
 		goto exit_deinit_bus;
 
@@ -9757,6 +9843,7 @@ static int qseecom_remove(struct platform_device *pdev)
 	qseecom_deregister_shmbridge();
 	kthread_stop(qseecom.unload_app_kthread_task);
 	kthread_stop(qseecom.unregister_lsnr_kthread_task);
+	qseecom_destroy_device();
 	qseecom_deinit_bus();
 	qseecom_deinit_clk();
 	qseecom_release_ce_data();
@@ -9774,18 +9861,7 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	if (qseecom.no_clock_support)
 		return 0;
 
-	mutex_lock(&qsee_bw_mutex);
 	mutex_lock(&clk_access_lock);
-
-	if (qseecom.current_mode != INACTIVE) {
-		ret = qseecom_bus_scale_update_request(
-			qseecom.qsee_perf_client, INACTIVE);
-		if (ret)
-			pr_err("Fail to scale down bus\n");
-		else
-			qseecom.current_mode = INACTIVE;
-	}
-
 	if (qclk->clk_access_cnt) {
 		if (qclk->ce_clk != NULL)
 			clk_disable_unprepare(qclk->ce_clk);
@@ -9794,14 +9870,26 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 		if (qclk->ce_bus_clk != NULL)
 			clk_disable_unprepare(qclk->ce_bus_clk);
 	}
-
-	del_timer_sync(&(qseecom.bw_scale_down_timer));
-	qseecom.timer_running = false;
-
 	mutex_unlock(&clk_access_lock);
-	mutex_unlock(&qsee_bw_mutex);
-	cancel_work_sync(&qseecom.bw_inactive_req_ws);
 
+	if (qseecom.support_bus_scaling) {
+		mutex_lock(&qsee_bw_mutex);
+
+		if (qseecom.current_mode != INACTIVE) {
+			ret = qseecom_bus_scale_update_request(
+					qseecom.qsee_perf_client, INACTIVE);
+			if (ret)
+				pr_err("Fail to scale down bus\n");
+			else
+				qseecom.current_mode = INACTIVE;
+		}
+
+		del_timer_sync(&(qseecom.bw_scale_down_timer));
+		qseecom.timer_running = false;
+
+		mutex_unlock(&qsee_bw_mutex);
+		cancel_work_sync(&qseecom.bw_inactive_req_ws);
+	}
 	return 0;
 }
 
@@ -9815,21 +9903,7 @@ static int qseecom_resume(struct platform_device *pdev)
 	if (qseecom.no_clock_support)
 		goto exit;
 
-	mutex_lock(&qsee_bw_mutex);
 	mutex_lock(&clk_access_lock);
-	if (qseecom.cumulative_mode >= HIGH)
-		mode = HIGH;
-	else
-		mode = qseecom.cumulative_mode;
-
-	if (qseecom.cumulative_mode != INACTIVE) {
-		ret = qseecom_bus_scale_update_request(
-			qseecom.qsee_perf_client, mode);
-		if (ret)
-			pr_err("Fail to scale up bus to %d\n", mode);
-		else
-			qseecom.current_mode = mode;
-	}
 
 	if (qclk->clk_access_cnt) {
 		if (qclk->ce_core_clk != NULL) {
@@ -9858,16 +9932,33 @@ static int qseecom_resume(struct platform_device *pdev)
 		}
 	}
 
-	if (qclk->clk_access_cnt || qseecom.cumulative_mode) {
-		qseecom.bw_scale_down_timer.expires = jiffies +
-			msecs_to_jiffies(QSEECOM_SEND_CMD_CRYPTO_TIMEOUT);
-		mod_timer(&(qseecom.bw_scale_down_timer),
-				qseecom.bw_scale_down_timer.expires);
-		qseecom.timer_running = true;
-	}
+	if (qseecom.support_bus_scaling) {
+		mutex_lock(&qsee_bw_mutex);
+		if (qseecom.cumulative_mode >= HIGH)
+			mode = HIGH;
+		else
+			mode = qseecom.cumulative_mode;
 
+		if (qseecom.cumulative_mode != INACTIVE) {
+			ret = qseecom_bus_scale_update_request(
+					qseecom.qsee_perf_client, mode);
+			if (ret)
+				pr_err("Fail to scale up bus to %d\n", mode);
+			else
+				qseecom.current_mode = mode;
+		}
+
+		if (qclk->clk_access_cnt || qseecom.cumulative_mode) {
+			qseecom.bw_scale_down_timer.expires = jiffies +
+				msecs_to_jiffies(QSEECOM_SEND_CMD_CRYPTO_TIMEOUT);
+			mod_timer(&(qseecom.bw_scale_down_timer),
+					qseecom.bw_scale_down_timer.expires);
+			qseecom.timer_running = true;
+		}
+		mutex_unlock(&qsee_bw_mutex);
+	}
 	mutex_unlock(&clk_access_lock);
-	mutex_unlock(&qsee_bw_mutex);
+
 	goto exit;
 
 ce_bus_clk_err:
@@ -9878,7 +9969,6 @@ ce_clk_err:
 		clk_disable_unprepare(qclk->ce_core_clk);
 err:
 	mutex_unlock(&clk_access_lock);
-	mutex_unlock(&qsee_bw_mutex);
 	ret = -EIO;
 exit:
 	atomic_set(&qseecom.qseecom_state, QSEECOM_STATE_READY);
