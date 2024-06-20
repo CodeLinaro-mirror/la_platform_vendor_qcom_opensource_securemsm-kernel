@@ -35,6 +35,8 @@
 #include "qcom_crypto_device.h"
 #if IS_ENABLED(CONFIG_COMPAT)
 #include "compat_qcedev.h"
+#else
+#include <linux/compat.h>
 #endif
 
 #define CACHE_LINE_SIZE 64
