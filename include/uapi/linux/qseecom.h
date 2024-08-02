@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * Copyright (c) 2017, 2019, 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _QSEECOM_H_
 #define _QSEECOM_H_
 
-#pragma message("Warning: This header file will be deprecated in future")
+/* This header file will be deprecated in future */
 
 #include <linux/types.h>
 #include <linux/ioctl.h>
@@ -54,6 +54,7 @@ struct qseecom_update_key_userinfo_req {
 	enum qseecom_key_management_usage_type usage;
 };
 
+#undef SHA256_DIGEST_LENGTH
 #define SHA256_DIGEST_LENGTH	(256/8)
 /*
  * struct qseecom_save_partition_hash_req
