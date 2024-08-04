@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * Copyright (c) 2017, 2019, 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _QSEECOM_API_H_
 #define _QSEECOM_API_H_
 
-#pragma message("Warning: This header file will be deprecated in future")
+/* This header file will be deprecated in future */
 
 #include <linux/types.h>
 #include <linux/ioctl.h>
