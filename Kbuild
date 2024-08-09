@@ -60,7 +60,7 @@ hdcp_qseecom_dlkm-objs := hdcp/hdcp_main.o hdcp/hdcp_smcinvoke.o hdcp/hdcp_qseec
 obj-$(CONFIG_HW_RANDOM_MSM_LEGACY) += qrng_dlkm.o
 qrng_dlkm-objs := qrng/msm_rng.o
 
-ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN)))
+ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) $(CONFIG_ARCH_NIOBE)))
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smmu_proxy.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smmu_proxy.h
 
@@ -73,14 +73,12 @@ ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN))
     endif
 endif
 
-#Enable QCE Dev Frontend if CONFIG_ARCH_LEMANS is set to y
-#ifeq ($(CONFIG_ARCH_LEMANS), y)
+#Enable QCE Dev Frontend if CONFIG_QTI_QUIN_GVM is set to y
 ifeq ($(CONFIG_QTI_QUIN_GVM), y)
 
-include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
-LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
+    include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
+    LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
 
-obj-$(CONFIG_QCEDEV_FE) += qcedev_fe_dlkm.o
-qcedev_fe_dlkm-objs := qcedev_fe/qcedev_fe.o qcedev_fe/qcedev_smmu.o
+    obj-$(CONFIG_QCEDEV_FE) += qcedev_fe_dlkm.o
+    qcedev_fe_dlkm-objs := qcedev_fe/qcedev_fe.o qcedev_fe/qcedev_smmu.o
 endif #CONFIG_QTI_QUIN_GVM
-#endif #CONFIG_ARCH_LEMANS
