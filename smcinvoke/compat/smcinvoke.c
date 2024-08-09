@@ -2764,8 +2764,11 @@ start_waiting_for_requests:
 		}
 	} while (!cb_txn);
 out:
-	if (server_info)
+	if (server_info) {
+		mutex_lock(&g_smcinvoke_lock);
 		kref_put(&server_info->ref_cnt, destroy_cb_server);
+		mutex_unlock(&g_smcinvoke_lock);
+	}
 
 	if (ret && ret != -ERESTARTSYS)
 		pr_err("accept thread returning with ret: %d\n", ret);
@@ -2860,6 +2863,11 @@ static long process_invoke_req(struct file *filp, unsigned int cmd,
 			memcpy(args_buf, (void *)(req.args),
 					nr_args * req.argsize);
 		}
+	}
+
+	if (args_buf == NULL) {
+		pr_err("argument is invalid\n");
+		return -EINVAL;
 	}
 
 	if (context_type == SMCINVOKE_OBJ_TYPE_TZ_OBJ &&
