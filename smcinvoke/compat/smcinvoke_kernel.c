@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -302,6 +302,17 @@ int32_t get_client_env_object(struct Object *clientEnvObj)
 	int32_t  ret = OBJECT_ERROR;
 	int retry_count = 0;
 	struct Object rootObj = Object_NULL;
+	bool register_with_credential = true;
+	/* Hardcode self cred buffer in CBOR encoded format.
+	 * CBOR encoded credentials is created using following parameters,
+	 * #define ATTR_UID        1
+	 * #define ATTR_PKG_NAME   3
+	 * #define SYSTEM_UID      1000
+	 * static const uint8_t bufString[] = {"UefiSmcInvoke"};
+	 */
+	uint8_t encodedBuf[] = {0xA2, 0x01, 0x19, 0x03, 0xE8, 0x03, 0x6E, 0x55,
+				0x65, 0x66, 0x69, 0x53, 0x6D, 0x63, 0x49, 0x6E,
+				0x76, 0x6F, 0x6B, 0x65, 0x0};
 
 	/* get rootObj */
 	ret = get_root_obj(&rootObj);
@@ -312,8 +323,18 @@ int32_t get_client_env_object(struct Object *clientEnvObj)
 
 	/* get client env */
 	do {
-		ret = IClientEnv_registerWithCredentials(rootObj,
-			Object_NULL, clientEnvObj);
+		if (register_with_credential) {
+			ret = IClientEnv_registerWithCredentials(rootObj,
+				Object_NULL, clientEnvObj);
+			if (ret == OBJECT_ERROR_INVALID) {
+				register_with_credential = false;
+				ret = IClientEnv_registerLegacy(rootObj, encodedBuf,
+					sizeof(encodedBuf), clientEnvObj);
+			}
+		} else {
+			ret = IClientEnv_registerLegacy(rootObj, encodedBuf,
+				sizeof(encodedBuf), clientEnvObj);
+		}
 		if (ret == OBJECT_ERROR_BUSY) {
 			pr_err("Secure side is busy,will retry after 5 ms, retry_count = %d",retry_count);
 			msleep(SMCINVOKE_INTERFACE_BUSY_WAIT_MS);
@@ -600,8 +621,31 @@ char *firmware_request_from_smcinvoke(const char *appname, size_t *fw_size, stru
 		goto release_fw_entry00;
 	}
 
-	/*Total size of image will be the offset of last image + the size of last split image*/
-	*fw_size = fw_entrylast->size + offset[num_images-1];
+	/*Find the total image size*/
+	*fw_size = fw_entry00->size;
+	for (phi = 1; phi < num_images-1; phi++) {
+		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d", appname, phi);
+		rc = firmware_request_nowarn(&fw_entry, fw_name, class_dev);
+		if (rc) {
+			pr_err("Failed to locate blob %s\n", fw_name);
+			goto release_fw_entrylast;
+		}
+
+		if (*fw_size > U32_MAX - fw_entry->size) {
+			release_firmware(fw_entry);
+			goto release_fw_entrylast;
+		}
+
+		if ((*fw_size) < (offset[phi] + fw_entry->size))
+			*fw_size = offset[phi] + fw_entry->size;
+		release_firmware(fw_entry);
+		fw_entry = NULL;
+	}
+
+	if ((*fw_size) < (offset[phi] + fw_entrylast->size))
+		*fw_size = offset[phi] + fw_entrylast->size;
+
+
 
 	/*Allocate memory for the buffer that will hold the split image*/
 	rc = qtee_shmbridge_allocate_shm((*fw_size), shm);
