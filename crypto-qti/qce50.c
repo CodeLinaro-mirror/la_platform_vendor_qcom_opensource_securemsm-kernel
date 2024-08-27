@@ -46,6 +46,7 @@
 #define CRYPTO_CORE_MAJOR_VER_NUM 0x05
 #define CRYPTO_CORE_MINOR_VER_NUM 0x03
 #define CRYPTO_CORE_STEP_VER_NUM 0x1
+#define MINOR_VERSION_TO_SUPPORT_STATUS6 0x07
 
 #define CRYPTO_REQ_USER_PAT 0xdead0000
 
@@ -182,6 +183,7 @@ struct qce_device {
 	bool kernel_pipes_support;
 	bool offload_pipes_support;
 	bool no_clock_gating;
+	bool is_STATUS6_register_supported;
 };
 
 static void print_notify_debug(struct sps_event_notify *notify);
@@ -243,7 +245,8 @@ void qce_get_crypto_status(void *handle, struct qce_error *error)
 	status[2] = readl_relaxed(pce_dev->iobase + CRYPTO_STATUS3_REG);
 	status[3] = readl_relaxed(pce_dev->iobase + CRYPTO_STATUS4_REG);
 	status[4] = readl_relaxed(pce_dev->iobase + CRYPTO_STATUS5_REG);
-	status[5] = readl_relaxed(pce_dev->iobase + CRYPTO_STATUS6_REG);
+	if (pce_dev->is_STATUS6_register_supported)
+		status[5] = readl_relaxed(pce_dev->iobase + CRYPTO_STATUS6_REG);
 
 #ifdef QCE_DEBUG
 	dump_status_regs(status);
@@ -468,6 +471,11 @@ static int _probe_ce_engine(struct qce_device *pce_dev)
 
 	pce_dev->ce_bam_info.minor_version = min_rev;
 	pce_dev->ce_bam_info.major_version = maj_rev;
+
+	if ((pce_dev->ce_bam_info.major_version == CRYPTO_CORE_MAJOR_VER_NUM
+		&& pce_dev->ce_bam_info.minor_version >= MINOR_VERSION_TO_SUPPORT_STATUS6) ||
+			 (pce_dev->ce_bam_info.major_version > CRYPTO_CORE_MAJOR_VER_NUM))
+		pce_dev->is_STATUS6_register_supported = true;
 
 	pce_dev->engines_avail = readl_relaxed(pce_dev->iobase +
 					CRYPTO_ENGINES_AVAIL);
@@ -3763,7 +3771,9 @@ static int _setup_cipher_aes_cmdlistptrs(struct qce_device *pdev, int cri_index,
 	qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_STATUS3_REG, 0, NULL);
 	qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_STATUS4_REG, 0, NULL);
 	qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_STATUS5_REG, 0, NULL);
-	qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_STATUS6_REG, 0, NULL);
+
+	if (pdev->is_STATUS6_register_supported)
+		qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_STATUS6_REG, 0, NULL);
 
 	qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_CONFIG_REG,
 			pdev->reg.crypto_cfg_be, &pcl_info->crypto_cfg);
