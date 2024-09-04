@@ -1126,11 +1126,18 @@ static int _disp_rm_log_stats(size_t count)
 			/* Update RM log buffer index tracker and its size */
 			log_start.read_idx = 0x0;
 			log_start.size = p_log_hdr->size;
+			/* Add size sanity check so that it doesn't exceed total size */
+			if (tzdbg.rmlog_rw_buf_size < log_start.size) {
+				pr_err("RM log size cannot be greater than buffer size, Exiting..\n");
+				return 0;
+			}
 		}
 		/* Update RM log buffer starting ptr */
 		log_ptr =
 			(uint8_t *) ((unsigned char *)tzdbg.rm_diag_buf +
 				 sizeof(struct rmdbg_log_hdr_t));
+		pr_debug("log_start.read_idx: %#x, log_start.size: %#x\n",
+				log_start.read_idx, log_start.size);
 	} else {
 	/* Return 0 to close the display file,if there is nothing else to do */
 		pr_err("There is no RM log to read, size is %d!\n",
@@ -1144,6 +1151,8 @@ static int _disp_rm_log_stats(size_t count)
 	/* Update tracking data structure */
 	log_start.size -= log_len;
 	log_start.read_idx += log_len;
+	pr_debug("log_len: %d, log_start.read_idx: %#x, log_start.size: %#x\n",
+			log_len, log_start.read_idx, log_start.size);
 
 	if (log_start.size)
 		wrap_around =  true;
