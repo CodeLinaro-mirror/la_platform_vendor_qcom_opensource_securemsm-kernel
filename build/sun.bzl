@@ -12,7 +12,7 @@ def define_sun():
             "qcedev-mod_dlkm",
             "qrng_dlkm",
             "qcrypto-msm_dlkm",
-            "smmu_proxy_dlkm"
+            "smmu_proxy_dlkm",
          ],
          extra_options = [
              "CONFIG_QCOM_SI_CORE_TEST",
