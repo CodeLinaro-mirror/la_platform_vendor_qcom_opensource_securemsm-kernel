@@ -130,6 +130,24 @@ struct dummy_request {
 	struct ahash_request areq;
 };
 
+#define QCE_RECOVERY_REQ_KEY_INDEX 5
+#define QCE_RECOVERY_REQ_SIZE 64
+
+struct skcipher_with_handle {
+	struct skcipher_request sk;
+	struct qce_device *pce_dev;
+};
+
+struct recovery_request {
+	u8 io_buf[QCE_RECOVERY_REQ_SIZE];
+	u8 iv[16];
+	struct scatterlist sg;
+	struct completion complete;
+	struct qce_req creq;
+	struct skcipher_with_handle areq;
+};
+
+
 /*
  * CE HW device structure.
  * Each engine has an instance of the structure.
@@ -180,6 +198,7 @@ struct qce_device {
 	atomic_t no_of_queued_req;
 	struct timer_list timer;
 	struct dummy_request dummyreq;
+	struct recovery_request recovery_req;
 	unsigned int mode;
 	unsigned int intr_cadence;
 	unsigned int dev_no;
@@ -194,6 +213,7 @@ struct qce_device {
 	bool kernel_pipes_support;
 	bool offload_pipes_support;
 	bool no_clock_gating;
+	bool reset_with_recovery_req;
 };
 
 static void print_notify_debug(struct sps_event_notify *notify);
@@ -360,6 +380,7 @@ void qce_get_crypto_status(void *handle, struct qce_error *error)
 	dump_status_regs(status);
 #endif
 
+	memset(error, 0, sizeof(*error));
 	if (status[0] != QCE_NO_ERROR_VAL1 && status[0] != QCE_NO_ERROR_VAL2) {
 		if (pce_dev->ce_bam_info.minor_version >= 8) {
 			qce_get_error_v8(pce_dev, error, status);
@@ -1740,6 +1761,26 @@ int qce_manage_timeout(void *handle, int req_info)
 	}
 	qce_free_req_info(pce_dev, req_info, true);
 
+	if (pce_dev->reset_with_recovery_req) {
+		unsigned long wait = 0;
+
+		reinit_completion(&pce_dev->recovery_req.complete);
+		pr_debug("Running recovery request to clear SID.\n");
+		if (qce_ablk_cipher_req(pce_dev, &pce_dev->recovery_req.creq))
+			pr_err("Could not initiate a cipher request.\n");
+		else
+			wait = wait_for_completion_timeout(
+					&pce_dev->recovery_req.complete,
+					msecs_to_jiffies(50));
+		if (wait == 0)
+			pr_err("Could not complete a recovery request.\n");
+	}
+
+	qce_get_crypto_status(pce_dev, &error);
+	if (!error.no_error) {
+		pr_err("Crypto Engine could not be reset.\n");
+		return 1;
+	}
 	return 0;
 }
 EXPORT_SYMBOL(qce_manage_timeout);
@@ -4396,6 +4437,20 @@ static int qce_dummy_req(struct qce_device *pce_dev)
 	return ret;
 }
 
+/* QCE_RECOVERY_REQ */
+static void qce_recovery_complete(void *cookie, unsigned char *digest,
+		unsigned char *authdata, int ret)
+{
+	struct skcipher_with_handle *areq = cookie;
+
+	if (!areq || !areq->pce_dev) {
+		pr_err("invalid handle\n");
+		return;
+	}
+
+	complete(&areq->pce_dev->recovery_req.complete);
+}
+
 static int select_mode(struct qce_device *pce_dev,
 		struct ce_request_info *preq_info)
 {
@@ -5587,6 +5642,12 @@ static int __qce_get_device_tree_data(struct platform_device *pdev,
 
 	pce_dev->key_index_mode_enabled = of_property_read_bool(
 		(&pdev->dev)->of_node, "qcom,use-key-index");
+	if (pce_dev->key_index_mode_enabled) {
+		pr_info("Key Index mode is enabled, TZ must have this enabled.\n");
+		pce_dev->reset_with_recovery_req = true;
+	} else {
+		pr_info("Key Index mode is disabled, TZ cannot have this enabled.\n");
+	}
 
 	for (i = 0; i < QCE_PIPE_LAST; i++)
 		pce_dev->ce_bam_info.pipe_pair_index[i] = 0;
@@ -5922,6 +5983,43 @@ static int setup_dummy_req(struct qce_device *pce_dev)
 	return 0;
 }
 
+/* recovery req setup */
+static int setup_recovery_req(struct qce_device *pce_dev)
+{
+	int len = QCE_RECOVERY_REQ_SIZE;
+	struct recovery_request *rreq = &pce_dev->recovery_req;
+
+	memset(rreq, 0, sizeof(*rreq));
+	sg_init_one(&rreq->sg, rreq->io_buf, len);
+
+	rreq->areq.pce_dev = pce_dev;
+	rreq->areq.sk.src = &rreq->sg;
+	rreq->areq.sk.dst = &rreq->sg;
+	rreq->areq.sk.cryptlen = len;
+	rreq->creq.areq = &rreq->areq;
+
+	rreq->creq.alg = CIPHER_ALG_AES;
+	rreq->creq.mode = QCE_MODE_CTR;
+	rreq->creq.dir = QCE_ENCRYPT;
+	rreq->creq.iv = &rreq->iv[0];
+	rreq->creq.ivsize = 16;
+	rreq->creq.iv_ctr_size = 0;
+
+	rreq->creq.encklen = 16;
+
+	rreq->creq.flags = QCRYPTO_CTX_USE_PIPE_KEY;
+	rreq->creq.op = QCE_REQ_ABLK_CIPHER_NO_KEY;
+	rreq->creq.offload_op = QCE_OFFLOAD_NONE;
+	rreq->creq.cryptlen = len;
+	rreq->creq.key_index = QCE_RECOVERY_REQ_KEY_INDEX;
+	rreq->creq.qce_cb = qce_recovery_complete;
+
+	rreq->creq.is_pattern_valid = false;
+	rreq->creq.block_offset = 0;
+	init_completion(&rreq->complete);
+	return 0;
+}
+
 static int qce_smmu_init(struct qce_device *pce_dev)
 {
 	struct device *dev = pce_dev->pdev;
@@ -6013,6 +6111,7 @@ void *qce_open(struct platform_device *pdev, int *rc)
 		goto err;
 	qce_setup_ce_sps_data(pce_dev);
 	qce_disable_clk(pce_dev);
+	setup_recovery_req(pce_dev);
 	setup_dummy_req(pce_dev);
 	atomic_set(&pce_dev->no_of_queued_req, 0);
 	pce_dev->mode = IN_INTERRUPT_MODE;
