@@ -370,7 +370,13 @@ err_exit:
 	return error;
 }
 
+#if (KERNEL_VERSION(6, 10, 0) >= LINUX_VERSION_CODE)
+#define MSM_RNG_REMOVE_RETURN_VAL 0
 static int msm_rng_remove(struct platform_device *pdev)
+#else
+#define MSM_RNG_REMOVE_RETURN_VAL
+static void msm_rng_remove(struct platform_device *pdev)
+#endif
 {
 	struct msm_rng_device *msm_rng_dev = platform_get_drvdata(pdev);
 
@@ -388,7 +394,7 @@ static int msm_rng_remove(struct platform_device *pdev)
 
 	kfree_sensitive(msm_rng_dev);
 	msm_rng_dev_cached = NULL;
-	return 0;
+	return MSM_RNG_REMOVE_RETURN_VAL;
 }
 
 static int qrng_get_random(struct crypto_rng *tfm, const u8 *src,

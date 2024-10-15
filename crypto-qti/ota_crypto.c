@@ -3,7 +3,7 @@
  * QTI Over the Air (OTA) Crypto driver
  *
  * Copyright (c) 2010-2014,2017-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/types.h>
@@ -770,7 +770,13 @@ exit_unreg_chrdev_region:
 	return rc;
 }
 
+#if (KERNEL_VERSION(6, 10, 0) >= LINUX_VERSION_CODE)
+#define QCRYPTO_REMOVE_RETURN_VAL 0
 static int qcota_remove(struct platform_device *pdev)
+#else
+#define QCRYPTO_REMOVE_RETURN_VAL
+static void qcota_remove(struct platform_device *pdev)
+#endif
 {
 	struct ota_dev_control *podev;
 	struct ota_qce_dev *pqce;
@@ -778,7 +784,7 @@ static int qcota_remove(struct platform_device *pdev)
 
 	pqce = platform_get_drvdata(pdev);
 	if (!pqce)
-		return 0;
+		return QCRYPTO_REMOVE_RETURN_VAL;
 	if (pqce->qce)
 		qce_close(pqce->qce);
 
@@ -803,7 +809,7 @@ ret:
 
 	tasklet_kill(&pqce->done_tasklet);
 	kfree(pqce);
-	return 0;
+	return QCRYPTO_REMOVE_RETURN_VAL;
 }
 
 static const struct of_device_id qcota_match[] = {
