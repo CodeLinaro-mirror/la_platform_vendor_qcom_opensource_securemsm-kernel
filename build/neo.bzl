@@ -3,6 +3,7 @@ load(":securemsm_kernel.bzl", "define_consolidate_gki_modules")
 def define_neo():
     define_consolidate_gki_modules(
         target = "neo-la",
+        variants = ["consolidate", "gki"],
         modules = [
             "smcinvoke_dlkm",
             "tz_log_dlkm",
@@ -11,12 +12,11 @@ def define_neo():
             "qcedev-mod_dlkm",
             "qrng_dlkm",
             "qcrypto-msm_dlkm",
-            "qseecom_dlkm",
+	    "qseecom_dlkm",
             "smmu_proxy_dlkm"
         ],
         extra_options = [
             "CONFIG_QCOM_SMCINVOKE",
-            "CONFIG_QSEECOM",
         ],
     )
 
