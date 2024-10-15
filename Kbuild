@@ -24,6 +24,10 @@ ifeq ($(CONFIG_ARCH_QTI_VM), y)
     endif
 endif
 
+ifeq ($(CONFIG_ARCH_NIOBE), y)
+ccflags-y += -DCONFIG_QCOM_LEGACY_ADDRESS_BUS_SIZE=1
+endif
+
 obj-$(CONFIG_QSEECOM) += qseecom_dlkm.o
 qseecom_dlkm-objs := qseecom/qseecom.o
 qseecom_dlkm-$(CONFIG_COMPAT) += qseecom/qseecom_32bit_impl.o
