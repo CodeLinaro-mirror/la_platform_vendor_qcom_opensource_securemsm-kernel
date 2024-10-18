@@ -1365,7 +1365,13 @@ static void _qcrypto_remove_engine(struct crypto_engine *pengine)
 	}
 }
 
+#if (KERNEL_VERSION(6, 10, 0) >= LINUX_VERSION_CODE)
+#define QCRYPTO_REMOVE_RETURN_VAL 0
 static int _qcrypto_remove(struct platform_device *pdev)
+#else
+#define QCRYPTO_REMOVE_RETURN_VAL
+static void _qcrypto_remove(struct platform_device *pdev)
+#endif
 {
 	struct crypto_engine *pengine;
 	struct crypto_priv *cp;
@@ -1373,7 +1379,7 @@ static int _qcrypto_remove(struct platform_device *pdev)
 	pengine = platform_get_drvdata(pdev);
 
 	if (!pengine)
-		return 0;
+		return QCRYPTO_REMOVE_RETURN_VAL;
 	cp = pengine->pcp;
 	mutex_lock(&cp->engine_lock);
 	_qcrypto_remove_engine(pengine);
@@ -1381,7 +1387,7 @@ static int _qcrypto_remove(struct platform_device *pdev)
 	if (pengine->qce)
 		qce_close(pengine->qce);
 	kfree_sensitive(pengine);
-	return 0;
+	return QCRYPTO_REMOVE_RETURN_VAL;
 }
 
 static int _qcrypto_check_aes_keylen(struct crypto_priv *cp, unsigned int len)

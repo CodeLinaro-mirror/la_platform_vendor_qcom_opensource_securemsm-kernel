@@ -2728,13 +2728,19 @@ static int qcedev_probe(struct platform_device *pdev)
 	return -EINVAL;
 };
 
+#if (KERNEL_VERSION(6, 10, 0) >= LINUX_VERSION_CODE)
+#define QCEDEV_REMOVE_RETURN_VAL 0
 static int qcedev_remove(struct platform_device *pdev)
+#else
+#define QCEDEV_REMOVE_RETURN_VAL
+static void qcedev_remove(struct platform_device *pdev)
+#endif
 {
 	struct qcedev_control *podev;
 
 	podev = platform_get_drvdata(pdev);
 	if (!podev)
-		return 0;
+		return QCEDEV_REMOVE_RETURN_VAL;
 
 	qcedev_ce_high_bw_req(podev, true);
 	if (podev->qce)
@@ -2752,7 +2758,7 @@ static int qcedev_remove(struct platform_device *pdev)
 	class_destroy(driver_class);
 
 	unregister_chrdev_region(qcedev_device_no, 1);
-	return 0;
+	return QCEDEV_REMOVE_RETURN_VAL;
 };
 
 static int qcedev_suspend(struct platform_device *pdev, pm_message_t state)
