@@ -2779,7 +2779,9 @@ out:
 static long process_invoke_req(struct file *filp, unsigned int cmd,
 		unsigned long arg)
 {
-	int    ret = -1, nr_args = 0;
+	int    ret = -1;
+	int nr_args = 0;
+	int nr_args_cnt = 0;
 	struct smcinvoke_cmd_req req = {0};
 	void   *in_msg = NULL, *out_msg = NULL;
 	size_t inmsg_size = 0, outmsg_size = SMCINVOKE_TZ_MIN_BUF_SIZE;
@@ -2846,11 +2848,15 @@ static long process_invoke_req(struct file *filp, unsigned int cmd,
 
 	nr_args = OBJECT_COUNTS_NUM_buffers(req.counts) +
 			OBJECT_COUNTS_NUM_objects(req.counts);
+	/* In caase on nr_args is zero, allocating the one buffer so that args_buf
+	   points to valid buffer. There is no need to copy anything to buffer.
+	*/
+	nr_args_cnt = ((nr_args > 0) ? nr_args : (nr_args + 1));
 
-	if (nr_args) {
-		args_buf = kcalloc(nr_args, req.argsize, GFP_KERNEL);
-		if (!args_buf)
-			return -ENOMEM;
+	args_buf = kcalloc(nr_args_cnt, req.argsize, GFP_KERNEL);
+	if (!args_buf)
+		return -ENOMEM;
+	if(nr_args){
 		if (context_type == SMCINVOKE_OBJ_TYPE_TZ_OBJ) {
 			ret = copy_from_user(args_buf,
 					u64_to_user_ptr(req.args),
@@ -2863,11 +2869,6 @@ static long process_invoke_req(struct file *filp, unsigned int cmd,
 			memcpy(args_buf, (void *)(req.args),
 					nr_args * req.argsize);
 		}
-	}
-
-	if (args_buf == NULL) {
-		pr_err("argument is invalid\n");
-		return -EINVAL;
 	}
 
 	if (context_type == SMCINVOKE_OBJ_TYPE_TZ_OBJ &&
