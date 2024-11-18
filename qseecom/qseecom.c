@@ -5533,8 +5533,8 @@ EXPORT_SYMBOL_GPL(qseecom_send_command);
 int qseecom_process_listener_from_smcinvoke(uint32_t *result,
 		u64 *response_type, unsigned int *data)
 {
-	return __qseecom_process_listener_from_smcinvoke(uint32_t *result,
-			u64 *response_type, unsigned int *data);
+	return __qseecom_process_listener_from_smcinvoke(result,
+			response_type, data);
 }
 EXPORT_SYMBOL_GPL(qseecom_process_listener_from_smcinvoke);
 
