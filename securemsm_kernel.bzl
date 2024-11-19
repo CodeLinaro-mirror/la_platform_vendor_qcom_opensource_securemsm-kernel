@@ -77,12 +77,26 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
         rule_name = "{}_{}".format(kernel_build_variant, module["name"])
         module_srcs = _get_module_srcs(target, variant, module, options)
 
+        dep = []
+        if target == "sun":
+          dep += [
+            "//soc-repo:{}/drivers/misc/qseecom_proxy".format(kernel_build_variant),
+          ]
         ddk_module(
             name = rule_name,
-            kernel_build = "//msm-kernel:{}".format(kernel_build_variant),
+            kernel_build = "//soc-repo:{}_base_kernel".format(kernel_build_variant),
             srcs = module_srcs,
             out = "{}.ko".format(module["name"]),
-            deps = ["//msm-kernel:all_headers"] + [_replace_formatting_codes(target, variant, dep) for dep in module["deps"]],
+            deps = [
+                    "//soc-repo:all_headers",
+                    "//soc-repo:{}/drivers/soc/qcom/mem_buf/mem_buf_dev".format(kernel_build_variant),
+                    "//soc-repo:{}/drivers/firmware/qcom/qcom-scm".format(kernel_build_variant),
+                    "//soc-repo:{}/drivers/soc/qcom/sps/sps_drv".format(kernel_build_variant),
+                    "//soc-repo:{}/drivers/firmware/qcom/si_core/si_core_module".format(kernel_build_variant),
+                    "//soc-repo:{}/drivers/firmware/qcom/si_core/mem_object".format(kernel_build_variant),
+                    "//soc-repo:{}/drivers/virt/gunyah/gh_msgq".format(kernel_build_variant),
+                    "//soc-repo:{}/drivers/dma-buf/heaps/qcom_dma_heaps".format(kernel_build_variant),
+                   ] + dep + [_replace_formatting_codes(target, variant, dep) for dep in module["deps"]],
             hdrs = module["hdrs"],
             local_defines = target_local_defines,
             copts = module["copts"],
@@ -102,7 +116,7 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
 
     kernel_modules_install(
         name = "{}_modules_install".format(kernel_build_variant),
-        kernel_build = "//msm-kernel:{}".format(kernel_build_variant),
+        kernel_build = "//soc-repo:{}_base_kernel".format(kernel_build_variant),
         kernel_modules = module_rules,
     )
 
