@@ -6555,6 +6555,15 @@ static int __qseecom_create_key_in_slot(uint8_t usage_code, uint8_t key_slot, co
 	static struct qseecom_dev_handle local_handle = {0};
 	static struct qseecom_dev_handle *data = &local_handle;
 
+	/*
+	 * The app_access_lock used to make sure only one TA be handled at
+	 * one time in TZ, if don't get the app_access_lock in entry,
+	 * it will be deadlock in concern case once this request not be handled
+	 * due to TZ is busy, therefore, __qseecom_reentrancy_check_if_no_app_blocked()
+	 * be called to release and retain the lock, once get the lock by this request,
+	 * it will never release the lock in the later, so the deadlock happens.
+	 */
+	mutex_lock(&app_access_lock);
 
 	create_key_req.usage = usage_code;
 	memset((void *)create_key_req.hash32, 0, QSEECOM_HASH_SIZE);
@@ -6563,12 +6572,12 @@ static int __qseecom_create_key_in_slot(uint8_t usage_code, uint8_t key_slot, co
 		create_key_req.usage >= QSEOS_KM_USAGE_MAX) {
 		pr_err("unsupported usage %d\n", create_key_req.usage);
 		ret = -EFAULT;
-		return ret;
+		goto exit;
 	}
 	if (key_id == NULL) {
 		pr_err("Key ID is NULL\n");
 		ret = -EINVAL;
-		return ret;
+		goto exit;
 	}
 	entries = qseecom_get_ce_hw_instance(DEFAULT_CE_INFO_UNIT,
 					create_key_req.usage);
@@ -6576,13 +6585,13 @@ static int __qseecom_create_key_in_slot(uint8_t usage_code, uint8_t key_slot, co
 		pr_err("no ce instance for usage %d instance %d\n",
 			DEFAULT_CE_INFO_UNIT, create_key_req.usage);
 		ret = -EINVAL;
-		return ret;
+		goto exit;
 	}
 
 	ce_hw = kcalloc(entries, sizeof(*ce_hw), GFP_KERNEL);
 	if (!ce_hw) {
 		ret = -ENOMEM;
-		return ret;
+		goto exit;
 	}
 	ret = __qseecom_get_ce_pipe_info(create_key_req.usage, &pipe, &ce_hw,
 			DEFAULT_CE_INFO_UNIT);
@@ -6698,6 +6707,9 @@ free_buf:
 		//Success , key already exists code
 		ret = QSEOS_RESULT_FAIL_KEY_ID_EXISTS;
 	}
+
+exit:
+	mutex_unlock(&app_access_lock);
 	return ret;
 }
 #endif //CONFIG_QTI_CRYPTO_FDE
