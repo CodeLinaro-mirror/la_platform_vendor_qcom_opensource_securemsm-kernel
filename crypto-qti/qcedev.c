@@ -35,6 +35,8 @@
 #include "qcom_crypto_device.h"
 #if IS_ENABLED(CONFIG_COMPAT)
 #include "compat_qcedev.h"
+#else
+#include <linux/compat.h>
 #endif
 
 #include <linux/compat.h>
@@ -395,6 +397,10 @@ void qcedev_sha_req_cb(void *cookie, unsigned char *digest,
 	if (!areq || !areq->cookie)
 		return;
 	handle = (struct qcedev_handle *) areq->cookie;
+
+        if (!handle || !handle->cntl)
+                return;
+
 	pdev = handle->cntl;
 	if (!pdev)
 		return;
@@ -423,6 +429,10 @@ void qcedev_cipher_req_cb(void *cookie, unsigned char *icv,
 	if (!areq || !areq->cookie)
 		return;
 	handle = (struct qcedev_handle *) areq->cookie;
+
+	if (!handle || !handle->cntl)
+		return;
+
 	podev = handle->cntl;
 	if (!podev)
 		return;

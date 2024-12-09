@@ -67,11 +67,10 @@ def _get_module_srcs(target, variant, module, options):
 
     return globbed_srcs
 
-def define_target_variant_modules(target, variant, modules, extra_options = [], config_option = None):
+def define_target_variant_modules(target, variant, modules, extra_options = [], config_option = None, arch = "arm64"):
     kernel_build_variant = "{}_{}".format(target, variant)
     options = _get_options(target, variant, config_option, modules, extra_options)
 
-    arch = get_target_arch(target)
     if arch == "arm":
         headers = ["//msm-kernel:all_headers_arm"]
     else:
@@ -82,7 +81,6 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
     modules = [securemsm_modules[module_name] for module_name in modules]
     tv = "{}_{}".format(target, variant)
 
-    arch = get_target_arch(target)
     if arch == "arm":
        target_local_defines = ["SMCINVOKE_TRACE_INCLUDE_PATH=../../../../../vendor/qcom/opensource/securemsm-kernel/smcinvoke/compat".format(native.package_name())]
     else:
@@ -123,9 +121,9 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
         kernel_modules = module_rules,
     )
 
-def define_consolidate_gki_modules(target, modules, extra_options = [], config_option = None):
+def define_consolidate_gki_modules(target, modules, extra_options = [], config_option = None, arch = "arm64"):
     define_target_variant_modules(target, "consolidate", modules, extra_options, config_option)
     define_target_variant_modules(target, "gki", modules, extra_options, config_option)
     define_target_variant_modules(target, "perf", modules, extra_options, config_option)
-    define_target_variant_modules(target, "perf-defconfig", modules, extra_options, config_option)
-    define_target_variant_modules(target, "debug-defconfig", modules, extra_options, config_option)
+    define_target_variant_modules(target, "perf-defconfig", modules, extra_options, config_option, arch)
+    define_target_variant_modules(target, "debug-defconfig", modules, extra_options, config_option, arch)
