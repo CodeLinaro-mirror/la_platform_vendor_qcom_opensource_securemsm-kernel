@@ -10,12 +10,6 @@ load(
 )
 load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
 
-def get_target_arch(target):
-    if target == "mdm9607":
-        return "arm"
-    else:
-        return "arm64"
-
 def _replace_formatting_codes(target, variant, s):
     kernel_build = "{}_{}".format(target, variant)
 

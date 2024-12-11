@@ -39,8 +39,6 @@
 #include <linux/compat.h>
 #endif
 
-#include <linux/compat.h>
-
 #define CACHE_LINE_SIZE 64
 #define CE_SHA_BLOCK_SIZE SHA256_BLOCK_SIZE
 #define MAX_CEHW_REQ_TRANSFER_SIZE (128*32*1024)
