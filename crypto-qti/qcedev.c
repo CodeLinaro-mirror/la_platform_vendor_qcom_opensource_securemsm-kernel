@@ -2702,8 +2702,10 @@ exit_mem_new_client:
 	podev->mem_client = NULL;
 
 exit_qce_close:
-	if (handle)
+	if (handle){
 		qce_close(handle);
+		handle = NULL;
+	}
 exit_scale_busbandwidth:
 	icc_set_bw(podev->icc_path, 0, 0);
 	if (podev->qce)
