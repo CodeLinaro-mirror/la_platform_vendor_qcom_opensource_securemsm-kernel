@@ -393,6 +393,10 @@ void qcedev_sha_req_cb(void *cookie, unsigned char *digest,
 	if (!areq || !areq->cookie)
 		return;
 	handle = (struct qcedev_handle *) areq->cookie;
+
+        if (!handle || !handle->cntl)
+                return;
+
 	pdev = handle->cntl;
 	if (!pdev)
 		return;
@@ -421,6 +425,10 @@ void qcedev_cipher_req_cb(void *cookie, unsigned char *icv,
 	if (!areq || !areq->cookie)
 		return;
 	handle = (struct qcedev_handle *) areq->cookie;
+
+	if (!handle || !handle->cntl)
+		return;
+
 	podev = handle->cntl;
 	if (!podev)
 		return;
@@ -2694,8 +2702,10 @@ exit_mem_new_client:
 	podev->mem_client = NULL;
 
 exit_qce_close:
-	if (handle)
+	if (handle){
 		qce_close(handle);
+		handle = NULL;
+	}
 exit_scale_busbandwidth:
 	icc_set_bw(podev->icc_path, 0, 0);
 	if (podev->qce)
