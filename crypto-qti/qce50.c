@@ -37,7 +37,8 @@
 #define CRYPTO_SMMU_IOVA_SIZE 0x40000000
 
 #define CRYPTO_CONFIG_RESET 0xE01EF
-#define MAX_SPS_DESC_FIFO_SIZE 0xfff0
+#define MAX_SPS_DESC_FIFO_SIZE 0x10000
+#define SPS_DESC_FIFO_SIZE_4K 0x1000
 #define QCE_MAX_NUM_DSCR    0x200
 #define QCE_SECTOR_SIZE	    0x200
 #define CE_CLK_100MHZ	100000000
@@ -234,6 +235,20 @@ static uint32_t _std_init_vector_sha256[] = {
 	0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
 	0x510E527F, 0x9B05688C,	0x1F83D9AB, 0x5BE0CD19
 };
+
+static bool is_crypto_600(struct qce_device *pce_dev)
+{
+	return ((pce_dev->ce_bam_info.major_version == 6) &&
+			(pce_dev->ce_bam_info.minor_version == 0) &&
+			(pce_dev->ce_bam_info.step_version == 0));
+}
+
+static bool is_crypto_601(struct qce_device *pce_dev)
+{
+	return ((pce_dev->ce_bam_info.major_version == 6) &&
+			(pce_dev->ce_bam_info.minor_version == 0) &&
+			(pce_dev->ce_bam_info.step_version == 1));
+}
 
 /* Select a pipe from an operation type in-place for the req_info. */
 static void qce_choose_pipe_from_op(struct qce_device *pce_dev, int req_info)
@@ -594,6 +609,7 @@ static int _probe_ce_engine(struct qce_device *pce_dev)
 
 	pce_dev->ce_bam_info.minor_version = min_rev;
 	pce_dev->ce_bam_info.major_version = maj_rev;
+	pce_dev->ce_bam_info.step_version = step_rev;
 
 	pce_dev->engines_avail = readl_relaxed(pce_dev->iobase +
 					CRYPTO_ENGINES_AVAIL);
@@ -2463,8 +2479,11 @@ static int qce_sps_init_ep_conn(struct qce_device *pce_dev,
 	 */
 	sps_connect_info->desc.size = QCE_MAX_NUM_DSCR * MAX_QCE_ALLOC_BAM_REQ *
 					sizeof(struct sps_iovec);
-	if (sps_connect_info->desc.size > MAX_SPS_DESC_FIFO_SIZE)
+	if ((sps_connect_info->desc.size > MAX_SPS_DESC_FIFO_SIZE) ||
+		 is_crypto_600(pce_dev))
 		sps_connect_info->desc.size = MAX_SPS_DESC_FIFO_SIZE;
+	if (is_crypto_601(pce_dev))
+		sps_connect_info->desc.size = SPS_DESC_FIFO_SIZE_4K;
 	sps_connect_info->desc.base = dma_alloc_coherent(pce_dev->pdev,
 					sps_connect_info->desc.size,
 					&sps_connect_info->desc.phys_base,

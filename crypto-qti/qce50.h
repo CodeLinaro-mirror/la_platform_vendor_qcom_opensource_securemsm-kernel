@@ -204,6 +204,7 @@ struct ce_bam_info {
 	int				ce_burst_size;
 	uint32_t			minor_version;
 	uint32_t			major_version;
+	uint32_t			step_version;
 	struct qce_sps_ep_conn_data	producer[QCE_PIPE_LAST];
 	struct qce_sps_ep_conn_data	consumer[QCE_PIPE_LAST];
 };
