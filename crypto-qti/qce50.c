@@ -4060,8 +4060,9 @@ static int _setup_unlock_pipe_cmdlistptrs(struct qce_device *pdev,
 	 * Designate chunks of the allocated memory to command list
 	 * to unlock pipes.
 	 */
-	qce_add_cmd_element(pdev, &ce_vaddr, CRYPTO_CONFIG_REG,
-					CRYPTO_CONFIG_RESET, NULL);
+	qce_add_cmd_element(
+		pdev, &ce_vaddr, CRYPTO_PWR_CTRL,
+		(pdev->no_clock_gating) ? 0 : CRYPTO_AUTO_SHUTDOWN_EN, NULL);
 	pcl_info->size = (uintptr_t)ce_vaddr - (uintptr_t)ce_vaddr_start;
 	*pvaddr = (unsigned char *) ce_vaddr;
 
