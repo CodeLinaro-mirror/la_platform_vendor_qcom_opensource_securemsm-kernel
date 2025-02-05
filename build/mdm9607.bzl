@@ -10,7 +10,6 @@ def define_mdm9607():
             "qcedev-mod_dlkm",
             "qrng_dlkm",
 	    "qcrypto-msm_dlkm",
-            "smmu_proxy_dlkm",
             "qseecom_dlkm"
         ],
         extra_options = [
