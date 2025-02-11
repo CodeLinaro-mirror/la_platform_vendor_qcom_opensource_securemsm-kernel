@@ -61,15 +61,24 @@ def _get_module_srcs(target, variant, module, options):
 
     return globbed_srcs
 
-def define_target_variant_modules(target, variant, modules, extra_options = [], config_option = None):
+def define_target_variant_modules(target, variant, modules, extra_options = [], config_option = None, arch = "arm64"):
     kernel_build_variant = "{}_{}".format(target, variant)
     options = _get_options(target, variant, config_option, modules, extra_options)
+
+    if arch == "arm":
+        headers = ["//msm-kernel:all_headers_arm"]
+    else:
+        headers = ["//msm-kernel:all_headers"]
+
     module_rules = []
     target_local_defines = []
     modules = [securemsm_modules[module_name] for module_name in modules]
     tv = "{}_{}".format(target, variant)
 
-    target_local_defines = ["SMCINVOKE_TRACE_INCLUDE_PATH=../../../{}/smcinvoke/compat".format(native.package_name())]
+    if arch == "arm":
+       target_local_defines = ["SMCINVOKE_TRACE_INCLUDE_PATH=../../../../../vendor/qcom/opensource/securemsm-kernel/smcinvoke/compat".format(native.package_name())]
+    else:
+       target_local_defines = ["SMCINVOKE_TRACE_INCLUDE_PATH=../../../{}/smcinvoke/compat".format(native.package_name())]
 
     for config in extra_options:
         target_local_defines.append(config)
@@ -82,7 +91,7 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
             kernel_build = "//msm-kernel:{}".format(kernel_build_variant),
             srcs = module_srcs,
             out = "{}.ko".format(module["name"]),
-            deps = ["//msm-kernel:all_headers"] + [_replace_formatting_codes(target, variant, dep) for dep in module["deps"]],
+            deps = headers + [_replace_formatting_codes(target, variant, dep) for dep in module["deps"]],
             hdrs = module["hdrs"],
             local_defines = target_local_defines,
             copts = module["copts"],
@@ -106,7 +115,9 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
         kernel_modules = module_rules,
     )
 
-def define_consolidate_gki_modules(target, modules, extra_options = [], config_option = None):
+def define_consolidate_gki_modules(target, modules, extra_options = [], config_option = None, arch = "arm64"):
     define_target_variant_modules(target, "consolidate", modules, extra_options, config_option)
     define_target_variant_modules(target, "gki", modules, extra_options, config_option)
     define_target_variant_modules(target, "perf", modules, extra_options, config_option)
+    define_target_variant_modules(target, "perf-defconfig", modules, extra_options, config_option, arch)
+    define_target_variant_modules(target, "debug-defconfig", modules, extra_options, config_option, arch)
