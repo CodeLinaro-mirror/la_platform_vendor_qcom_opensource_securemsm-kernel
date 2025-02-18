@@ -741,7 +741,7 @@ static int proxy_fault_handler(struct iommu_domain *domain, struct device *dev,
 {
 	dev_err(dev, "Context fault with IOVA %lx and fault flags %d\n", iova, flags);
 
-	return -EINVAL;
+	return -ENOSYS;
 }
 
 static int cb_probe_handler(struct device *dev)
@@ -768,7 +768,12 @@ static int cb_probe_handler(struct device *dev)
 
 	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
 
+#if IS_ENABLED(CONFIG_QCOM_LEGACY_ADDRESS_BUS_SIZE)
+	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+#else
 	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(64));
+#endif
+
 	if (ret) {
 		dev_err(dev, "Failed to set DMA-MASK\n");
 		return ret;
