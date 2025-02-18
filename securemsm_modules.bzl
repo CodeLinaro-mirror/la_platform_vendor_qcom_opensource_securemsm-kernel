@@ -7,6 +7,7 @@ QRNG_PATH = "qrng"
 SI_CORE_TEST_PATH = "si_core_tests"
 SMMU_PROXY_PATH = "smmu-proxy"
 QCEDEV_FE_PATH="qcedev_fe"
+QSEECOM_ENABLED=False
 
 # This dictionary holds all the securemsm-kernel  modules included by calling register_securemsm_module
 securemsm_modules = {}
@@ -49,6 +50,9 @@ def register_securemsm_module(name, path = None, config_option = None, default_s
     if config_option:
         securemsm_modules_by_config[config_option] = name
 
+    if name == "qseecom_dlkm":
+        QSEECOM_ENABLED = True
+
 # ------------------------------------ SECUREMSM MODULE DEFINITIONS ---------------------------------
 register_securemsm_module(
     name = "qseecom_dlkm",
@@ -87,7 +91,8 @@ register_securemsm_module(
             ],
         }
     },
-    deps = [":smcinvoke_kernel_headers", ":qseecom_kernel_headers", "%b_qseecom_dlkm"],
+    deps = (["%b_qseecom_dlkm"] if QSEECOM_ENABLED else []) +
+        [":smcinvoke_kernel_headers", ":qseecom_kernel_headers"],
     hdrs = [":smcinvoke_kernel_headers"],
 )
 
@@ -177,7 +182,18 @@ register_securemsm_module(
 register_securemsm_module(
     name = "smmu_proxy_dlkm",
     path = SMMU_PROXY_PATH,
-    srcs = ["qti-smmu-proxy-pvm.c", "qti-smmu-proxy-common.c"],
+    config_srcs = {
+        "CONFIG_ARCH_QTI_VM": {
+            True: [
+                "qti-smmu-proxy-tvm.c",
+                "qti-smmu-proxy-common.c",
+            ],
+            False: [
+                "qti-smmu-proxy-pvm.c",
+                "qti-smmu-proxy-common.c",
+            ],
+        }
+    },
     deps = ["%b_smcinvoke_dlkm", ":smmu_proxy_headers"],
 )
 
