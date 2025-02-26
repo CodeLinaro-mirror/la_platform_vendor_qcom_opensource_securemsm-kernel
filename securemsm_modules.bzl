@@ -1,6 +1,7 @@
 SMCINVOKE_PATH = "smcinvoke"
 QSEECOM_PATH = "qseecom"
 TZLOG_PATH = "tz_log"
+TMECOM_PATH = "tmecom"
 HDCP_PATH = "hdcp"
 QCEDEV_PATH = "crypto-qti"
 QRNG_PATH = "qrng"
@@ -99,7 +100,10 @@ register_securemsm_module(
 register_securemsm_module(
     name = "tz_log_dlkm",
     path = TZLOG_PATH,
-    deps = [],
+    deps = [
+        ":tmecom_kernel_headers",
+        "%b_tmecom-intf_dlkm",
+    ],
     default_srcs = ["tz_log.c"],
 )
 
@@ -136,6 +140,17 @@ register_securemsm_module(
     copts = [
         "-include",
         "config/sec-kernel_defconfig.h",
+    ],
+)
+
+register_securemsm_module(
+    name = "tmecom-intf_dlkm",
+    path = TMECOM_PATH,
+    deps = [":tmecom_kernel_headers"],
+    srcs = [
+        "tmelog.c",
+        "tmecom.c",
+        "tmecom.h",
     ],
 )
 
