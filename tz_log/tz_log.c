@@ -4,7 +4,7 @@
  * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
-#define pr_fmt(fmt) "tz_log :[%s][%d]: " fmt, __func__, __LINE__
+#define pr_fmt(fmt) "tz_log :[%s]: " fmt, __func__
 
 #include <linux/compiler.h>
 #include <linux/debugfs.h>
@@ -2076,59 +2076,54 @@ static int tzdbg_get_tz_version(void)
 	return ret;
 }
 
-static void tzdbg_query_encrypted_log(void)
-{
-	int ret = 0;
-	uint64_t enabled;
-
-	ret = qcom_scm_query_encrypted_log_feature(&enabled);
-	if (ret) {
-		if (ret == -EIO)
-			pr_info("SCM_CALL : SYS CALL NOT SUPPORTED IN TZ\n");
-		else
-			pr_err("scm_call QUERY_ENCR_LOG_FEATURE failed ret %d\n", ret);
-		tzdbg.is_encrypted_log_enabled = false;
-	} else
-		tzdbg.is_encrypted_log_enabled = enabled;
-}
-
-#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE)
 static void tzdbg_query_log_status(void)
 {
-	int ret = 0;
+	int ret_encrypt_log = 0;
+	int ret_query_log = 0;
 	u64 status = 0;
+	bool entry = false;
 
-	ret = qcom_scm_query_log_status(&status);
-	if (ret) {
-		if (ret == -EIO) {
-			pr_warn("query_log_status NOT supported in QTEE, fallback to query_encryption call\n");
-			/* As fallback mechanism, check for log encryption query scm call */
-			tzdbg_query_encrypted_log();
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE)
+	entry = true;
+	ret_query_log = qcom_scm_query_log_status(&status);
+	if (!ret_query_log) {
+		/* status:
+		 * Bit 0: encryption status
+		 * Bit 1: tz/qsee plain text logging status
+		 * --------------------------------------------------------------------
+		 * |Bit 0|Bit 1| Comments                                             |
+		 * --------------------------------------------------------------------
+		 * |  1  |  0  | Possible combn, no direct access to tz/qsee buffer   |
+		 * |  0  |  0  | Possible combn, no direct access to tz/qsee buffer.  |
+		 * |  1  |  1  | Combn not possible                                   |
+		 * |  0  |  1  | Possible combn, tz/qsee direct buffer access allowed |
+		 * --------------------------------------------------------------------
+		 */
+		tzdbg.is_encrypted_log_enabled = status & 1;
+		tzdbg.tz_qsee_plain_log_enabled = (status >> 1) & 1;
+	} else
+		pr_err("scm_call query_log_status failed, ret: %d\n", ret_query_log);
+#endif
+	if (!entry || ret_query_log == -EIO) {
+		ret_encrypt_log = qcom_scm_query_encrypted_log_feature(&status);
+		if (!ret_encrypt_log)
+			tzdbg.is_encrypted_log_enabled = status;
+		else
+			pr_err("scm_call query_encr_log_feature failed ret: %d\n", ret_encrypt_log);
+
+		/*
+		 * Enable plain logging for below cases:
+		 * 1. If query_encrypted_log scm isn't present in TZ.
+		 * 2. If scm is success and encryption is not enabled.
+		 */
+		if (ret_encrypt_log == -EIO ||
+			(!ret_encrypt_log && !tzdbg.is_encrypted_log_enabled))
 			tzdbg.tz_qsee_plain_log_enabled = true;
-		} else
-			pr_err("qcom_scm_query_log_status scm failed, ret %d\n", ret);
-		return;
 	}
 
-	/* status:
-	 * Bit 0: encryption status
-	 * Bit 1: tz/qsee plain text logging status
-	 * --------------------------------------------------------------------
-	 * |Bit 0|Bit 1| Comments                                             |
-	 * --------------------------------------------------------------------
-	 * |  1  |  0  | Possible combn, no direct access to tz/qsee buffer   |
-	 * |  0  |  0  | Possible combn, no direct access to tz/qsee buffer.  |
-	 * |  1  |  1  | Combn not possible                                   |
-	 * |  0  |  1  | Possible combn, tz/qsee direct buffer access allowed |
-	 * --------------------------------------------------------------------
-	 *
-	 */
-	tzdbg.is_encrypted_log_enabled = status & 1;
-	tzdbg.tz_qsee_plain_log_enabled = (status >> 1) & 1;
-
-	pr_info("status: 0x%llx\n", status);
+	pr_info("encryption: %d, plain log: %d, status: 0x%llx, entry: %d\n",
+		tzdbg.is_encrypted_log_enabled, tzdbg.tz_qsee_plain_log_enabled, status, entry);
 }
-#endif
 
 #if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
 static bool tzdbg_query_tz_time(void)
@@ -2231,14 +2226,7 @@ static int tz_log_probe(struct platform_device *pdev)
 	/* Retrieve the address of diagnostic data */
 	tzdiag_phy_iobase = readl_relaxed(virt_iobase);
 
-#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE)
 	tzdbg_query_log_status();
-#else
-	tzdbg_query_encrypted_log();
-	tzdbg.tz_qsee_plain_log_enabled = true;
-#endif
-	pr_info("is_encrypted_log_enabled: %d, tz_qsee_plain_log_enabled: %d\n",
-		tzdbg.is_encrypted_log_enabled, tzdbg.tz_qsee_plain_log_enabled);
 
 	/*
 	 * TZ diag region is directly accessible if plain text logging is
