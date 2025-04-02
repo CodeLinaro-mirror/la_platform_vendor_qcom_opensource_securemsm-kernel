@@ -3,7 +3,7 @@
  * QTI Secure Execution Environment Communicator (QSEECOM) driver
  *
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QSEECOM: %s: " fmt, __func__
@@ -57,6 +57,12 @@
 
 #if IS_ENABLED(CONFIG_COMPAT)
 #include "qseecom_32bit_impl.h"
+#endif
+
+#ifdef CONFIG_PM
+#define QSEECOM_PMOPS (&qseecom_pm_ops)
+#else
+#define QSEECOM_PMOPS NULL
 #endif
 
 #define QSEECOM_DEV			"qseecom"
@@ -153,6 +159,14 @@ enum qseecom_bandwidth_request_mode {
 	MEDIUM,
 	HIGH,
 };
+/**
+ * For requests that get TZ busy, qseecom will
+ * put them on hold and re-send them after TZ
+ * free. The timeout for waiting TZ free is
+ * 30 seconds.
+ */
+#define TZ_BUSY_TIMEOUT_MSECS (30*1000)
+
 #define K_COPY_FROM_USER(err, dst, src, size) \
 	do {\
 		if (!(is_compat_task()))\
@@ -550,7 +564,7 @@ static void __qseecom_free_coherent_buf(uint32_t size,
 static int __qseecom_scm_call2_locked(uint32_t smc_id, struct qseecom_scm_desc *desc)
 {
 	int ret = 0;
-	int retry_count = 0;
+	unsigned long tz_busy_timeout = msecs_to_jiffies(TZ_BUSY_TIMEOUT_MSECS);
 
 	if (!desc) {
 		pr_err("Invalid buffer pointer\n");
@@ -559,15 +573,45 @@ static int __qseecom_scm_call2_locked(uint32_t smc_id, struct qseecom_scm_desc *
 
 	do {
 		ret = qcom_scm_qseecom_call(smc_id, desc, false);
-		if ((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) {
+		if (ret != -EBUSY && desc->ret[0] != -QSEE_RESULT_FAIL_APP_BUSY) {
+			break;
+		}
+		if(qseecom.app_block_ref_cnt == 0){
 			mutex_unlock(&app_access_lock);
 			msleep(QSEECOM_SCM_EBUSY_WAIT_MS);
 			mutex_lock(&app_access_lock);
+			if(tz_busy_timeout >= msecs_to_jiffies(QSEECOM_SCM_EBUSY_WAIT_MS)){
+				tz_busy_timeout -= msecs_to_jiffies(QSEECOM_SCM_EBUSY_WAIT_MS);
+			} else {
+				tz_busy_timeout = 0;
+			}
+		} else {
+			mutex_unlock(&app_access_lock);
+			/* wait until no listener is active, or timeout/interrupted */
+			ret = wait_event_interruptible_timeout(qseecom.app_block_wq,
+				(!qseecom.app_block_ref_cnt), tz_busy_timeout);
+			mutex_lock(&app_access_lock);
+			/* no listner is active: re-send */
+			if(ret > 0){
+				tz_busy_timeout = ret;
+			}
+			/* interrupted or error */
+			else if (ret < 0){
+				pr_err("Waiting for TZ free is interrupted");
+				return ret;
+			} else {
+				/* timed out */
+				tz_busy_timeout = 0;
+			}
 		}
-		if (retry_count == 33)
-			pr_warn("secure world has been busy for 1 second!\n");
-	} while (((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) &&
-			(retry_count++ < QSEECOM_SCM_EBUSY_MAX_RETRY));
+		if(tz_busy_timeout == 0){
+			pr_err("Secure World has been busy for 30 seconds!");
+			ret = -EBUSY;
+			desc->ret[0] = -QSEE_RESULT_FAIL_APP_BUSY;
+			break;
+		}
+		pr_info_ratelimited("re-sending syscall with TZ busy");
+	} while (true);
 	return ret;
 }
 
@@ -3313,6 +3357,14 @@ static int qseecom_prepare_unload_app(struct qseecom_dev_handle *data)
 
 	if (!memcmp(data->client.app_name, "keymaste", strlen("keymaste"))) {
 		pr_debug("Do not add keymaster app from tz to unload list\n");
+		/* release the associated dma-buf */
+		if (data->client.dmabuf) {
+			qseecom_vaddr_unmap(data->client.sb_virt, data->client.sgt,
+				data->client.attach, data->client.dmabuf);
+			MAKE_NULL(data->client.sgt,
+				data->client.attach, data->client.dmabuf);
+		}
+		data->released = true;
 		return 0;
 	}
 
@@ -9911,7 +9963,8 @@ static int qseecom_remove(struct platform_device *pdev)
 	return ret;
 }
 
-static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
+#ifdef CONFIG_PM
+static int qseecom_suspend(struct device *dev)
 {
 	int ret = 0;
 	struct qseecom_clk *qclk;
@@ -9953,7 +10006,7 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 
-static int qseecom_resume(struct platform_device *pdev)
+static int qseecom_resume(struct device *dev)
 {
 	int mode = 0;
 	int ret = 0;
@@ -10035,6 +10088,12 @@ exit:
 	return ret;
 }
 
+static const struct dev_pm_ops qseecom_pm_ops = {
+	.suspend_late = qseecom_suspend,
+	.resume_early = qseecom_resume,
+};
+#endif
+
 static const struct of_device_id qseecom_match[] = {
 	{
 		.compatible = "qcom,qseecom",
@@ -10045,10 +10104,9 @@ static const struct of_device_id qseecom_match[] = {
 static struct platform_driver qseecom_plat_driver = {
 	.probe = qseecom_probe,
 	.remove = qseecom_remove,
-	.suspend = qseecom_suspend,
-	.resume = qseecom_resume,
 	.driver = {
 		.name = "qseecom",
+		.pm = QSEECOM_PMOPS,
 		.of_match_table = qseecom_match,
 	},
 };
