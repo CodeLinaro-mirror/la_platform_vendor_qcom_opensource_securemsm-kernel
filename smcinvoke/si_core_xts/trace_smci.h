@@ -13,6 +13,8 @@
 
 #include "smci_impl.h"
 
+#define MAX_STR_LEN 48
+
 TRACE_EVENT(process_invoke_req_handle,
 	TP_PROTO(unsigned int cmd, uint32_t op, uint32_t counts),
 	TP_ARGS(cmd, op, counts),
@@ -35,19 +37,19 @@ TRACE_EVENT(process_invoke_req_wait,
 		uint32_t op, uint32_t counts),
 	TP_ARGS(ob_name, ob_type, op, counts),
 	TP_STRUCT__entry(
-		__string(str, ob_name)
+		__array(char,  str, MAX_STR_LEN)
 		__field(enum si_object_type, ob_type)
 		__field(uint32_t, op)
 		__field(uint32_t, counts)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, ob_name, MAX_STR_LEN);
 		__entry->ob_type = ob_type;
 		__entry->op = op;
 		__entry->counts = counts;
 	),
 	TP_printk("ob_name=%s ob_type=0x%02x op=0x%08x counts=%u",
-		__get_str(str), __entry->ob_type, __entry->op, __entry->counts)
+		__entry->str, __entry->ob_type, __entry->op, __entry->counts)
 );
 
 TRACE_EVENT(process_invoke_req_ret,
@@ -55,7 +57,7 @@ TRACE_EVENT(process_invoke_req_ret,
 		uint32_t counts, int32_t result, int ret),
 	TP_ARGS(ob_name, oic_context_id, op, counts, result, ret),
 	TP_STRUCT__entry(
-		__string(str, ob_name)
+		__array(char,  str, MAX_STR_LEN)
 		__field(unsigned int, oic_context_id)
 		__field(uint32_t, op)
 		__field(uint32_t, counts)
@@ -63,7 +65,7 @@ TRACE_EVENT(process_invoke_req_ret,
 		__field(int, ret)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, ob_name, MAX_STR_LEN);
 		__entry->oic_context_id = oic_context_id;
 		__entry->op = op;
 		__entry->counts = counts;
@@ -71,7 +73,7 @@ TRACE_EVENT(process_invoke_req_ret,
 		__entry->result = result;
 	),
 	TP_printk("ob_name=%s oic_context_id=0x%08x op=0x%08x counts=%u result=%d ret=%d",
-		__get_str(str), __entry->oic_context_id, __entry->op, __entry->counts,
+		__entry->str, __entry->oic_context_id, __entry->op, __entry->counts,
 		__entry->result, __entry->ret)
 );
 
@@ -95,19 +97,19 @@ TRACE_EVENT(process_accept_req_wait,
 		int32_t ac_result),
 	TP_ARGS(si_comm, ac_txn_id, ac_has_resp, ac_result),
 	TP_STRUCT__entry(
-		__string(str, si_comm)
+		__array(char,  str, MAX_STR_LEN)
 		__field(uint64_t, ac_txn_id)
 		__field(int32_t, ac_has_resp)
 		__field(int32_t, ac_result)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, si_comm, MAX_STR_LEN);
 		__entry->ac_txn_id = ac_txn_id;
 		__entry->ac_has_resp = ac_has_resp;
 		__entry->ac_result = ac_result;
 	),
 	TP_printk("si_comm=%s ac_txn_id=0x%016llx ac_has_resp=0x%04x ac_result=%d",
-		__get_str(str), __entry->ac_txn_id, __entry->ac_has_resp, __entry->ac_result)
+		__entry->str, __entry->ac_txn_id, __entry->ac_has_resp, __entry->ac_result)
 );
 
 TRACE_EVENT(process_accept_req_ret,
@@ -115,7 +117,7 @@ TRACE_EVENT(process_accept_req_ret,
 		uint32_t ac_op, uint32_t counts, int32_t ac_result),
 	TP_ARGS(si_comm, ac_cbobj_id, ac_txn_id, ac_op, counts, ac_result),
 	TP_STRUCT__entry(
-		__string(str, si_comm)
+		__array(char,  str, MAX_STR_LEN)
 		__field(int64_t, ac_cbobj_id)
 		__field(uint32_t, ac_txn_id)
 		__field(uint32_t, ac_op)
@@ -123,7 +125,7 @@ TRACE_EVENT(process_accept_req_ret,
 		__field(int32_t, ac_result)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, si_comm, MAX_STR_LEN);
 		__entry->ac_cbobj_id = ac_cbobj_id;
 		__entry->ac_txn_id = ac_txn_id;
 		__entry->ac_op = ac_op;
@@ -132,7 +134,7 @@ TRACE_EVENT(process_accept_req_ret,
 	),
 	TP_printk(
 		"si_comm=%s ac_cbobj_id=0x%016llx ac_txn_id=0x%08x ac_op=0x%08x counts=%u ac_result=%d",
-		__get_str(str), __entry->ac_cbobj_id, __entry->ac_txn_id,
+		__entry->str, __entry->ac_cbobj_id, __entry->ac_txn_id,
 		__entry->ac_op, __entry->counts, __entry->ac_result)
 );
 
@@ -141,17 +143,17 @@ TRACE_EVENT_CONDITION(wait_for_pending_txn,
 	TP_ARGS(cb_si_comm, txn, ret),
 	TP_CONDITION(txn),
 	TP_STRUCT__entry(
-		__string(str, cb_si_comm)
+		__array(char,  str, MAX_STR_LEN)
 		__field(struct cb_txn*, txn)
 		__field(int, ret)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, cb_si_comm, MAX_STR_LEN);
 		__entry->txn = txn;
 		__entry->ret = ret;
 	),
 	TP_printk("cb_si_comm=%s cb_context_id=0x%08x cb_u_handle=0x%016llx op=0x%08lx ret=%d",
-		__get_str(str), __entry->txn->context_id, __entry->txn->u_handle, __entry->txn->op,
+		__entry->str, __entry->txn->context_id, __entry->txn->u_handle, __entry->txn->op,
 		__entry->ret)
 );
 
@@ -159,15 +161,15 @@ TRACE_EVENT(mem_object_release,
 	TP_PROTO(const char *cb_si_comm, int64_t cb_u_handle),
 	TP_ARGS(cb_si_comm, cb_u_handle),
 	TP_STRUCT__entry(
-		__string(str, cb_si_comm)
+		__array(char,  str, MAX_STR_LEN)
 		__field(int64_t, cb_u_handle)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, cb_si_comm, MAX_STR_LEN);
 		__entry->cb_u_handle = cb_u_handle;
 	),
 	TP_printk("cb_si_comm=%s cb_u_handle=0x%016llx",
-		__get_str(str), __entry->cb_u_handle)
+		__entry->str, __entry->cb_u_handle)
 );
 
 TRACE_EVENT(cbo_dispatch_handle,
@@ -175,19 +177,19 @@ TRACE_EVENT(cbo_dispatch_handle,
 		int64_t cb_u_handle, unsigned long op),
 	TP_ARGS(ob_name, cb_context_id, cb_u_handle, op),
 	TP_STRUCT__entry(
-		__string(str, ob_name)
+		__array(char,  str, MAX_STR_LEN)
 		__field(unsigned int, cb_context_id)
 		__field(int64_t, cb_u_handle)
 		__field(unsigned long, op)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, ob_name, MAX_STR_LEN);
 		__entry->cb_context_id = cb_context_id;
 		__entry->cb_u_handle = cb_u_handle;
 		__entry->op = op;
 	),
 	TP_printk("ob_name=%s cb_context_id=0x%08x cb_u_handle=0x%016llx op=0x%08lx",
-		__get_str(str), __entry->cb_context_id, __entry->cb_u_handle, __entry->op)
+		__entry->str, __entry->cb_context_id, __entry->cb_u_handle, __entry->op)
 );
 
 TRACE_EVENT(cbo_dispatch_wait,
@@ -195,34 +197,34 @@ TRACE_EVENT(cbo_dispatch_wait,
 		unsigned int cb_txn_completion_done),
 	TP_ARGS(ob_name, context_id, cb_txn_completion_done),
 	TP_STRUCT__entry(
-		__string(str, ob_name)
+		__array(char,  str, MAX_STR_LEN)
 		__field(unsigned int, context_id)
 		__field(unsigned int, cb_txn_completion_done)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, ob_name, MAX_STR_LEN);
 		__entry->context_id = context_id;
 		__entry->cb_txn_completion_done = cb_txn_completion_done;
 	),
 	TP_printk("ob_name=%s context_id=0x%08x cb_txn_completion_done=%u",
-		__get_str(str), __entry->context_id, __entry->cb_txn_completion_done)
+		__entry->str, __entry->context_id, __entry->cb_txn_completion_done)
 );
 
 TRACE_EVENT(cbo_dispatch_ret,
 	TP_PROTO(const char *ob_name, unsigned int context_id, int errno),
 	TP_ARGS(ob_name, context_id, errno),
 	TP_STRUCT__entry(
-		__string(str, ob_name)
+		__array(char,  str, MAX_STR_LEN)
 		__field(unsigned int, context_id)
 		__field(int, errno)
 	),
 	TP_fast_assign(
-		__assign_str(str);
+		strscpy(__entry->str, ob_name, MAX_STR_LEN);
 		__entry->context_id = context_id;
 		__entry->errno = errno;
 	),
 	TP_printk("ob_name=%s, context_id=0x%08x errno=%d",
-		__get_str(str), __entry->context_id, __entry->errno)
+		__entry->str, __entry->context_id, __entry->errno)
 );
 
 #endif /* _TRACE_SMCI_H */
