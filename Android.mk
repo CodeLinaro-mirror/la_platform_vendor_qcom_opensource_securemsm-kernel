@@ -20,9 +20,9 @@ ifeq ($(ENABLE_SECUREMSM_DLKM), true)
   ifeq ($(TARGET_USES_SMMU_PROXY), true)
     ENABLE_SMMU_PROXY := true
   endif #TARGET_USES_SMMU_PROXY
-  ifeq ($(TARGET_USES_TMECOM), true)
+  ifeq ($(TARGET_BOARD_PLATFORM), canoe)
     ENABLE_TMECOM_INTF_DLKM := true
-  endif #TARGET_USES_TMECOM
+  endif #canoe
 endif #ENABLE_SECUREMSM_DLKM
 
 ifeq ($(ENABLE_SECUREMSM_QTEE_DLKM), true)
