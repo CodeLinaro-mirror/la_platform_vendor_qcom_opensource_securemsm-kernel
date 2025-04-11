@@ -7,6 +7,16 @@ package(
 load("//build/kernel/kleaf:kernel.bzl", "ddk_headers")
 
 ddk_headers(
+    name = "tmecom_kernel_headers",
+    hdrs = [
+        "include/linux/tmelog.h",
+    ],
+    includes = [
+        "include",
+    ],
+)
+
+ddk_headers(
     name = "smcinvoke_kernel_headers",
     hdrs = glob([
         "include/linux/smcinvoke*.h",
