@@ -10091,6 +10091,8 @@ exit:
 static const struct dev_pm_ops qseecom_pm_ops = {
 	.suspend_late = qseecom_suspend,
 	.resume_early = qseecom_resume,
+	.freeze_late = qseecom_suspend,
+	.restore_early = qseecom_resume,
 };
 #endif
 
