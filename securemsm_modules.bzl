@@ -83,7 +83,8 @@ register_securemsm_module(
                 "si_core_xts/qseecom.c",
                 "si_core_xts/smci_kernel.c",
                 "si_core_xts/smci.c",
-                "si_core_xts/smci_impl.h"
+                "si_core_xts/smci_impl.h",
+                "si_core_xts/trace_smci.h"
             ],
             False: [
                 "compat/smcinvoke.c",
