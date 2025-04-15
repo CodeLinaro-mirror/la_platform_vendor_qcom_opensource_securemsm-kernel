@@ -507,6 +507,7 @@ static uint32_t tmecrashdump_address_offset;
 static uint64_t qseelog_shmbridge_handle;
 static struct encrypted_log_info enc_qseelog_info;
 static struct encrypted_log_info enc_tzlog_info;
+static DEFINE_MUTEX(tzdbg_lock);
 
 #if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
 static bool g_realtime_consolidation_enable;
@@ -1654,6 +1655,7 @@ static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
 		return ret;
 	}
 
+	mutex_lock(&tzdbg_lock);
 	if (!stat->display_len) {
 		if (tz_id == TZDBG_QSEE_LOG)
 			stat->display_len = _disp_encrpted_log_stats(
@@ -1675,6 +1677,8 @@ static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
 				count);
 	stat->display_offset += ret;
 	stat->display_len -= ret;
+	mutex_unlock(&tzdbg_lock);
+
 	pr_debug("ret = %d, offset = %d\n", ret, (int)(*offp));
 	pr_debug("display_len = %lu, offset = %lu\n",
 			stat->display_len, stat->display_offset);
