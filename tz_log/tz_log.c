@@ -6,16 +6,21 @@
 
 #define pr_fmt(fmt) "tz_log :[%s][%d]: " fmt, __func__, __LINE__
 
+#include <linux/compiler.h>
 #include <linux/debugfs.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/msm_ion.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/rtc.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/time.h>
+#include <linux/timekeeping.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/of.h>
@@ -96,6 +101,12 @@
  * Directory for TZ DBG logs
  */
 #define TZDBG_DIR_NAME "tzdbg"
+
+#define TICKS_STR_LEN (16 + 1) // 16 for the length of uint64_t string and 1 for '\0'
+#define TIMESTAMP_STR_LEN 128
+#define BASE_16 16
+#define NS_TO_10_US_BASE 10000
+#define US_TO_10_NS_BASE 10000
 
 /*
  * VMID Table
@@ -497,6 +508,13 @@ static uint64_t qseelog_shmbridge_handle;
 static struct encrypted_log_info enc_qseelog_info;
 static struct encrypted_log_info enc_tzlog_info;
 
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+static bool g_realtime_consolidation_enable;
+static uint64_t g_tz_ticks_baseline;
+static uint64_t g_tz_ticks_frequency;
+static ktime_t g_hlos_uptime_baseline;
+#endif
+
 /*
  * Debugfs data structure and functions
  */
@@ -739,16 +757,193 @@ static int _disp_tz_log_stats_legacy(void)
 	return len;
 }
 
+static uint32_t _copy_to_dispbuf(struct tzdbg_log_t *log, struct tzdbg_log_pos_t *log_start,
+	uint32_t round, uint32_t max_len, uint8_t *disp, uint32_t index)
+{
+	uint32_t len = 0;
+
+	if (round == 0)
+		return 0;
+
+	/*
+	 *  Read from ring buff while there is data and space in return buff
+	 */
+	while ((log_start->offset != log->log_pos.offset) && (len < max_len)) {
+		disp[index++] = log->log_buf[log_start->offset];
+		log_start->offset = (log_start->offset + 1) % round;
+		if (log_start->offset == 0)
+			++log_start->wrap;
+		++len;
+	}
+
+	return len;
+}
+
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+static int _find_end_label(const uint8_t *buf, uint32_t begin, uint32_t end, uint32_t remain,
+	uint32_t log_len)
+{
+	uint32_t len = 0;
+	uint32_t next = (begin + 1) % log_len;
+
+	while ((begin != end) && (next != end) && ((len + 2) <= remain)) {
+		if ((char)buf[begin] == '\r' && (char)buf[next] == '\n')
+			return len + strlen("\r\n");
+
+		begin = next;
+		next = (next + 1) % log_len;
+		++len;
+	}
+
+	return -EINVAL;
+}
+
+static int _generate_realtime_timestamp(const char *buf, uint32_t begin, uint32_t len,
+	uint32_t round,	char *timestamp, uint32_t stamp_len, uint32_t *next)
+{
+	uint32_t index = 0;
+	uint64_t ticks = 0;
+	char ticks_str[TICKS_STR_LEN] = {0};
+	ktime_t hlos_t = 0;
+	ktime_t hlos_realtime_t = 0;
+	ktime_t tz_t = 0;
+	struct timespec64 hlos_ts = {};
+	struct timespec64 hlos_realtime_ts = {};
+	struct timespec64 tz_ts = {};
+	struct rtc_time hlos_rtc_t = {};
+	uint32_t size = 0;
+
+	// Considering three situations.
+	// 1. Normal log : [ticks]... --> parse the ticks.
+	// 2. Abnormal log : [invalid ticks]...--> Not parse the ticks.
+	// 3. Abnormal log : XXX]... --> Not parse the ticks.
+	if (buf[begin] != '[')
+		return -EINVAL;
+
+	for (index = 1; index < len && index < sizeof(ticks_str); ++index) {
+		if (buf[(begin + index) % round] != ']') {
+			ticks_str[index - 1] = buf[(begin + index) % round];
+		} else {
+			ticks_str[index - 1] = '\0';
+			if (kstrtoull(ticks_str, BASE_16, &ticks))
+				return -EINVAL;
+
+			*next = index + 1;
+			break;
+		}
+	}
+
+	if (index == len || index == sizeof(ticks_str))
+		return -EINVAL;
+
+	hlos_t = g_hlos_uptime_baseline;
+
+	// Calculate the relevant hlos uptime based on hlos uptime baseline and tz time interval.
+	if (likely(ticks > g_tz_ticks_baseline))
+		hlos_t += (ticks - g_tz_ticks_baseline) * US_TO_10_NS_BASE / g_tz_ticks_frequency;
+	else
+		hlos_t -= (g_tz_ticks_baseline - ticks) * US_TO_10_NS_BASE / g_tz_ticks_frequency;
+
+	hlos_ts = ktime_to_timespec64(hlos_t);
+	hlos_realtime_t = ktime_mono_to_real(hlos_t);
+	hlos_realtime_ts = ktime_to_timespec64(hlos_realtime_t);
+	hlos_rtc_t = rtc_ktime_to_tm(hlos_realtime_t);
+	tz_t = ticks * US_TO_10_NS_BASE / g_tz_ticks_frequency;
+	tz_ts = ktime_to_timespec64(tz_t);
+
+	size = scnprintf(timestamp, stamp_len,
+			"[%02d-%02d %02d:%02d:%02d.%05ld][%lld:%05ld][%lld:%05ld]",
+			hlos_rtc_t.tm_mon + 1, hlos_rtc_t.tm_mday,
+			hlos_rtc_t.tm_hour, hlos_rtc_t.tm_min,
+			hlos_rtc_t.tm_sec, hlos_realtime_ts.tv_nsec / NS_TO_10_US_BASE,
+			hlos_ts.tv_sec, hlos_ts.tv_nsec / NS_TO_10_US_BASE,
+			tz_ts.tv_sec, tz_ts.tv_nsec / NS_TO_10_US_BASE);
+
+	return size;
+}
+
+static uint32_t _copy_to_dispbuf_with_realtime(struct tzdbg_log_t *log,
+	struct tzdbg_log_pos_t *log_start, uint32_t round, uint32_t max_len, uint8_t *disp,
+	uint32_t index)
+{
+	uint32_t len = 0;
+	int each_log_len = 0;
+	char timestamp[TIMESTAMP_STR_LEN] = {0};
+	int stamp_len = 0;
+	uint32_t next = 0;
+	uint32_t begin = log_start->offset;
+	uint32_t end = log->log_pos.offset;
+	uint32_t remain = max_len;
+	uint32_t copy_len = 0;
+
+	if (round == 0)
+		return 0;
+
+	while ((begin != end) && (len < max_len)) {
+		remain = max_len - len;
+		/*
+		 * There will be three main type of log buffer.
+		 * 1. Nomal log ends with \r\n. It will add the realtime information.
+		 * 2. Abnormal log doesn't end with \r\n since reading occurs before writing.
+		 * 3. Abnormal log doesn't end with \r\n because of insufficient buffer.
+		 */
+		each_log_len = _find_end_label(log->log_buf, begin, end, remain, round);
+		if (each_log_len == -EINVAL) {
+			if (len == 0) {
+				// To copy the buffer, considering that the initial buffer passed
+				// from user space is insufficient for the entire log line
+				len += _copy_to_dispbuf(log, log_start, round, remain, disp, index);
+				pr_warn("Read an incomplete log.\n");
+			}
+			break;
+		}
+
+		if ((uint32_t)each_log_len > remain)
+			break;
+
+		copy_len = (uint32_t)each_log_len;
+		stamp_len = _generate_realtime_timestamp(log->log_buf, begin, each_log_len, round,
+				timestamp, sizeof(timestamp), &next);
+		if (stamp_len != -EINVAL) {
+			if (stamp_len <= (remain - each_log_len)) {
+				index += _copy_to_dispbuf(log, log_start, round, next, disp, index);
+				copy_len -= next;
+				len += next;
+				memcpy(disp + index, timestamp, stamp_len);
+				index += (uint32_t)stamp_len;
+				len += (uint32_t)stamp_len;
+			} else if (len != 0) {
+				/*
+				 * There are two main reasons for the insufficient buffer. One is
+				 * that there is already some log data in it when the length is not
+				 * zero. The other is due to insufficient space provided by the
+				 * user. For the former reason, the data will not be copied until
+				 * the next round of reading from user space. For the latter reason,
+				 * the initial log data will be copied to user space.
+				 */
+				break;
+			}
+		}
+
+		index += _copy_to_dispbuf(log, log_start, round, copy_len, disp, index);
+		len += copy_len;
+
+		begin = (begin + each_log_len) % round;
+	}
+
+	return len;
+}
+#endif
+
 static int _disp_log_stats(struct tzdbg_log_t *log,
 			struct tzdbg_log_pos_t *log_start, uint32_t log_len,
 			size_t count, uint32_t buf_idx)
 {
-	uint32_t wrap_start;
-	uint32_t wrap_end;
-	uint32_t wrap_cnt;
-	int max_len;
-	int len = 0;
-	int i = 0;
+	uint32_t wrap_start = 0;
+	uint32_t wrap_end = 0;
+	uint32_t wrap_cnt = 0;
+	uint32_t max_len = 0;
+	uint32_t len = 0;
 
 	wrap_start = log_start->wrap;
 	wrap_end = log->log_pos.wrap;
@@ -796,17 +991,16 @@ static int _disp_log_stats(struct tzdbg_log_t *log,
 
 	pr_debug("diag_buf wrap = %u, offset = %u\n",
 		log->log_pos.wrap, log->log_pos.offset);
-	/*
-	 *  Read from ring buff while there is data and space in return buff
-	 */
-	while ((log_start->offset != log->log_pos.offset) && (len < max_len)) {
-		tzdbg.disp_buf[i++] = log->log_buf[log_start->offset];
-		log_start->offset = (log_start->offset + 1) % log_len;
-		if (log_start->offset == 0)
-			++log_start->wrap;
-		++len;
-	}
 
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+	if (g_realtime_consolidation_enable)
+		len = _copy_to_dispbuf_with_realtime(log, log_start, log_len, max_len,
+			tzdbg.disp_buf, 0);
+	else
+		len = _copy_to_dispbuf(log, log_start, log_len, max_len, tzdbg.disp_buf, 0);
+#else
+	len = _copy_to_dispbuf(log, log_start, log_len, max_len, tzdbg.disp_buf, 0);
+#endif
 	/*
 	 * return buffer to caller
 	 */
@@ -814,16 +1008,114 @@ static int _disp_log_stats(struct tzdbg_log_t *log,
 	return len;
 }
 
+static uint32_t _copy_to_dispbuf_v2(struct tzdbg_log_v2_t *log,
+	struct tzdbg_log_pos_v2_t *log_start, uint32_t round, uint32_t max_len, uint8_t *disp,
+	uint32_t index)
+{
+	uint32_t len = 0;
+
+	if (round == 0)
+		return 0;
+
+	/*
+	 *  Read from ring buff while there is data and space in return buff
+	 */
+	while ((log_start->offset != log->log_pos.offset) && (len < max_len)) {
+		disp[index++] = log->log_buf[log_start->offset];
+		log_start->offset = (log_start->offset + 1) % round;
+		if (log_start->offset == 0)
+			++log_start->wrap;
+		++len;
+	}
+
+	return len;
+}
+
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
+	struct tzdbg_log_pos_v2_t *log_start, uint32_t round, uint32_t max_len, uint8_t *disp,
+	uint32_t index)
+{
+	uint32_t len = 0;
+	int each_log_len = 0;
+	char timestamp[TIMESTAMP_STR_LEN] = {0};
+	int stamp_len = 0;
+	uint32_t next = 0;
+	uint32_t begin = log_start->offset;
+	uint32_t end = log->log_pos.offset;
+	uint32_t remain = max_len;
+	uint32_t copy_len = 0;
+
+	if (round == 0)
+		return 0;
+
+	while ((begin != end) && (len < max_len)) {
+		remain = max_len - len;
+		/*
+		 * There will be three main type of log buffer.
+		 * 1. Nomal log ends with \r\n. It will add the realtime information.
+		 * 2. Abnormal log doesn't end with \r\n since reading occurs before writing.
+		 * 3. Abnormal log doesn't end with \r\n because of insufficient buffer.
+		 */
+		each_log_len = _find_end_label(log->log_buf, begin, end, remain, round);
+		if (each_log_len == -EINVAL) {
+			if (len == 0) {
+				// To copy the buffer, considering that the initial buffer passed
+				// from user space is insufficient for the entire log line
+				len += _copy_to_dispbuf_v2(log, log_start, round, remain, disp,
+					index);
+				pr_warn("Read an incomplete log.\n");
+			}
+			break;
+		}
+
+		if ((uint32_t)each_log_len > remain)
+			break;
+
+		copy_len = (uint32_t)each_log_len;
+		stamp_len = _generate_realtime_timestamp(log->log_buf, begin, each_log_len, round,
+				timestamp, sizeof(timestamp), &next);
+		if (stamp_len != -EINVAL) {
+			if (stamp_len <= (remain - each_log_len)) {
+				index += _copy_to_dispbuf_v2(log, log_start, round, next, disp,
+					index);
+				copy_len -= next;
+				len += next;
+				memcpy(disp + index, timestamp, stamp_len);
+				index += (uint32_t)stamp_len;
+				len += (uint32_t)stamp_len;
+			} else if (len != 0) {
+				/*
+				 * There are two main reasons for the insufficient buffer. One is
+				 * that there is already some log data in it when the length is not
+				 * zero. The other is due to insufficient space provided by the
+				 * user. For the former reason, the data will not be copied until
+				 * the next round of reading from user space. For the latter reason,
+				 * the initial log data will be copied to user space.
+				 */
+				break;
+			}
+		}
+
+		index += _copy_to_dispbuf_v2(log, log_start, round, copy_len, disp, index);
+		len += copy_len;
+
+		begin = (begin + each_log_len) % round;
+	}
+
+	return len;
+}
+#endif
+
 static int _disp_log_stats_v2(struct tzdbg_log_v2_t *log,
 			struct tzdbg_log_pos_v2_t *log_start, uint32_t log_len,
 			size_t count, uint32_t buf_idx)
 {
-	uint32_t wrap_start;
-	uint32_t wrap_end;
-	uint32_t wrap_cnt;
-	int max_len;
-	int len = 0;
-	int i = 0;
+	uint32_t wrap_start = 0;
+	uint32_t wrap_end = 0;
+	uint32_t wrap_cnt = 0;
+	uint32_t max_len = 0;
+	uint32_t len = 0;
 
 	wrap_start = log_start->wrap;
 	wrap_end = log->log_pos.wrap;
@@ -871,17 +1163,15 @@ static int _disp_log_stats_v2(struct tzdbg_log_v2_t *log,
 
 	pr_debug("diag_buf wrap = %u, offset = %u\n",
 		log->log_pos.wrap, log->log_pos.offset);
-
-	/*
-	 *  Read from ring buff while there is data and space in return buff
-	 */
-	while ((log_start->offset != log->log_pos.offset) && (len < max_len)) {
-		tzdbg.disp_buf[i++] = log->log_buf[log_start->offset];
-		log_start->offset = (log_start->offset + 1) % log_len;
-		if (log_start->offset == 0)
-			++log_start->wrap;
-		++len;
-	}
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+	if (g_realtime_consolidation_enable)
+		len = _copy_to_dispbuf_with_realtime_v2(log, log_start, log_len, max_len,
+			tzdbg.disp_buf, 0);
+	else
+		len = _copy_to_dispbuf_v2(log, log_start, log_len, max_len, tzdbg.disp_buf, 0);
+#else
+	len = _copy_to_dispbuf_v2(log, log_start, log_len, max_len, tzdbg.disp_buf, 0);
+#endif
 
 	/*
 	 * return buffer to caller
@@ -1049,6 +1339,14 @@ static int _disp_encrpted_log_stats(struct encrypted_log_info *enc_log_info,
 	len += print_text("\nTag : ", encr_log_head->tag,
 			TZBSP_TAG_LEN,
 			tzdbg.disp_buf + len, display_buf_size - len);
+
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+	len += scnprintf(tzdbg.disp_buf + len, (display_buf_size - 1) - len,
+			"\nHlos_Real_Time_Baseline :\n%llx\n\nHlos_Uptime_Baseline :\n%llx\n\n"
+			"\nTZ_Uptime_Ticks_Baseline :\n%llx\n\nTZ_Tick_Frequency :\n%llx\n",
+			ktime_mono_to_real(g_hlos_uptime_baseline), g_hlos_uptime_baseline,
+			g_tz_ticks_baseline, g_tz_ticks_frequency);
+#endif
 
 	if (len > display_buf_size - size)
 		pr_warn("Cannot fit all info into the buffer\n");
@@ -1832,6 +2130,32 @@ static void tzdbg_query_log_status(void)
 }
 #endif
 
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+static bool tzdbg_query_tz_time(void)
+{
+	int ret = 0;
+	uint64_t ticks = 0;
+	uint32_t frequency = 0;
+	ktime_t begin_time = 0;
+	ktime_t end_time = 0;
+
+	begin_time = ktime_get_boottime_ns();
+
+	ret = qcom_scm_query_tz_time(&ticks, &frequency);
+	if (ret) {
+		pr_err("QUERY_TZ_TIME_FEATURE failed ret %d\n", ret);
+		return false;
+	}
+
+	end_time = ktime_get_boottime_ns();
+	g_tz_ticks_baseline = ticks;
+	g_tz_ticks_frequency = frequency;
+	g_hlos_uptime_baseline = begin_time + (end_time - begin_time) / 2;
+
+	return true;
+}
+#endif
+
 /*
  * Driver functions
  */
@@ -1992,6 +2316,15 @@ static int tz_log_probe(struct platform_device *pdev)
 		goto exit_free_encr_log_buf;
 	}
 
+#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+	g_realtime_consolidation_enable = tzdbg_query_tz_time();
+	if (g_realtime_consolidation_enable)
+		pr_info("Timestamp consolidation is enabled. Ticks is %lld, Frequency is %lld, Hlos time is %lld\n",
+			g_tz_ticks_baseline, g_tz_ticks_frequency, g_hlos_uptime_baseline);
+	else
+		pr_info("Timestamp consolidation is not supported!\n");
+#endif
+
 	if (tzdbg_fs_init(pdev))
 		goto exit_free_disp_buf;
 	return 0;
@@ -2022,6 +2355,7 @@ static void tz_log_remove(struct platform_device *pdev)
 	tzdbg_free_qsee_log_buf(pdev);
 	if (!tzdbg.is_encrypted_log_enabled)
 		kfree(tzdbg.diag_buf);
+
 #if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 	return 0;
 #endif
