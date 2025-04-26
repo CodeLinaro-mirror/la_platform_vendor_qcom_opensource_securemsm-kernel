@@ -2291,8 +2291,10 @@ static int tz_log_probe(struct platform_device *pdev)
 	 * access contents directly.
 	 */
 	ret = tzdbg_register_qsee_log_buf(pdev);
-	if (ret)
-		goto exit_free_diag_buf;
+	if (ret) {
+		pr_warn("Failure with plain qsee log buffer, Skipping qsee_log node creation..\n");
+		tzdbg.stat[TZDBG_QSEE_LOG].avail = false;
+	}
 
 	/* Allocate encrypted qsee and tz log buffer if encryption is enabled */
 	ret = tzdbg_allocate_encrypted_log_buf(pdev);
@@ -2336,7 +2338,6 @@ exit_free_encr_log_buf:
 	tzdbg_free_encrypted_log_buf(pdev);
 exit_free_qsee_log_buf:
 	tzdbg_free_qsee_log_buf(pdev);
-exit_free_diag_buf:
 	if (tzdbg.tz_qsee_plain_log_enabled)
 		kfree(tzdbg.diag_buf);
 	return -ENXIO;
