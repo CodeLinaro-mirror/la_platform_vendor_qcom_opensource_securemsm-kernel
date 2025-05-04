@@ -150,7 +150,6 @@ struct recovery_request {
 	struct skcipher_with_handle areq;
 };
 
-
 /*
  * CE HW device structure.
  * Each engine has an instance of the structure.
@@ -222,6 +221,7 @@ struct qce_device {
 	bool results_dump_input_support;
 	bool support_core_irq;
 	struct tasklet_struct core_irq_bottom_half;
+	bool fifo_eco_unavailable;
 };
 
 static void print_notify_debug(struct sps_event_notify *notify);
@@ -247,13 +247,6 @@ static bool is_crypto_600(struct qce_device *pce_dev)
 	return ((pce_dev->ce_bam_info.major_version == 6) &&
 			(pce_dev->ce_bam_info.minor_version == 0) &&
 			(pce_dev->ce_bam_info.step_version == 0));
-}
-
-static bool is_crypto_601(struct qce_device *pce_dev)
-{
-	return ((pce_dev->ce_bam_info.major_version == 6) &&
-			(pce_dev->ce_bam_info.minor_version == 0) &&
-			(pce_dev->ce_bam_info.step_version == 1));
 }
 
 /* Select a pipe from an operation type in-place for the req_info. */
@@ -2588,11 +2581,16 @@ static int qce_sps_init_ep_conn(struct qce_device *pce_dev,
 	 */
 	sps_connect_info->desc.size = QCE_MAX_NUM_DSCR * MAX_QCE_ALLOC_BAM_REQ *
 					sizeof(struct sps_iovec);
-	if ((sps_connect_info->desc.size > MAX_SPS_DESC_FIFO_SIZE) ||
-		 is_crypto_600(pce_dev))
+	if (sps_connect_info->desc.size > MAX_SPS_DESC_FIFO_SIZE)
 		sps_connect_info->desc.size = MAX_SPS_DESC_FIFO_SIZE;
-	if (is_crypto_601(pce_dev))
-		sps_connect_info->desc.size = SPS_DESC_FIFO_SIZE_4K;
+
+	if (is_crypto_600(pce_dev)) {
+		if (pce_dev->fifo_eco_unavailable)
+			sps_connect_info->desc.size = MAX_SPS_DESC_FIFO_SIZE;
+		else
+			sps_connect_info->desc.size = SPS_DESC_FIFO_SIZE_4K;
+	}
+
 	sps_connect_info->desc.base = dma_alloc_coherent(pce_dev->pdev,
 					sps_connect_info->desc.size,
 					&sps_connect_info->desc.phys_base,
@@ -6347,6 +6345,32 @@ static int qce_smmu_init(struct qce_device *pce_dev)
 	return 0;
 }
 
+#define TCSR_SOC_HW_VERSION	0x1FC8000
+#define REG_SIZE	4
+#define TCSR_SOC_HW_VERSION_MAJOR_MASK	GENMASK(15, 8)
+
+static void qce_parse_soc_revision(struct qce_device *pce_dev)
+{
+	unsigned int soc_hw_version = 0;
+	unsigned int major = 0;
+	void __iomem *hw_version_reg = ioremap(TCSR_SOC_HW_VERSION, REG_SIZE);
+
+	if (!hw_version_reg) {
+		pr_err("reg remap failed for TCSR");
+		pce_dev->fifo_eco_unavailable = false;
+		return;
+	}
+	soc_hw_version = readl(hw_version_reg);
+	major = FIELD_GET(TCSR_SOC_HW_VERSION_MAJOR_MASK, soc_hw_version);
+
+	if (major == 1)
+		pce_dev->fifo_eco_unavailable = true;
+	else
+		pce_dev->fifo_eco_unavailable = false;
+
+	iounmap(hw_version_reg);
+}
+
 /* crypto engine open function. */
 void *qce_open(struct platform_device *pdev, int *rc)
 {
@@ -6421,6 +6445,7 @@ void *qce_open(struct platform_device *pdev, int *rc)
 		     qce_core_irq_bottom_half, (unsigned long)pce_dev);
 	qce_core_irq_init(pce_dev);
 	qce_init_ce_cfg_val(pce_dev);
+	qce_parse_soc_revision(pce_dev);
 	*rc  = qce_sps_init(pce_dev);
 	if (*rc)
 		goto err;
