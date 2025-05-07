@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -15,6 +15,9 @@
 #include <linux/elf.h>
 #include "smcinvoke.h"
 #include "smcinvoke_object.h"
+#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
+#include <linux/smci_object.h>
+#endif
 #include "IClientEnv.h"
 #if IS_ENABLED(CONFIG_QSEECOM_COMPAT)
 #include "../IQSEEComCompat.h"
@@ -297,7 +300,7 @@ int get_root_obj(struct Object *rootObj)
 /*
  * Get a client environment using a NULL credentials Object
  */
-int32_t get_client_env_object(struct Object *clientEnvObj)
+static int32_t __get_client_env_object(struct Object *clientEnvObj)
 {
 	int32_t  ret = OBJECT_ERROR;
 	int retry_count = 0;
@@ -325,7 +328,29 @@ int32_t get_client_env_object(struct Object *clientEnvObj)
 	Object_release(rootObj);
 	return ret;
 }
+
+int32_t get_client_env_object(struct Object *clientEnvObj)
+{
+	return __get_client_env_object(clientEnvObj);
+}
 EXPORT_SYMBOL_GPL(get_client_env_object);
+
+#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
+
+static int32_t __smci_get_client_env_object(struct smci_object *client_env_obj)
+{
+	return __get_client_env_object((struct Object *)client_env_obj);
+}
+
+const static struct smci_drv_ops smci_driver_ops = {
+	.smci_get_client_env_object = __smci_get_client_env_object,
+};
+
+int get_smci_kernel_fun_ops(void)
+{
+	return provide_smci_kernel_fun_ops(&smci_driver_ops);
+}
+#endif
 
 #if IS_ENABLED(CONFIG_QSEECOM_COMPAT)
 
