@@ -8,34 +8,37 @@
 
 #include <linux/compiler.h>
 #include <linux/debugfs.h>
-#include <linux/errno.h>
 #include <linux/delay.h>
+#include <linux/dma-buf.h>
+#include <linux/errno.h>
 #include <linux/io.h>
-#include <linux/msm_ion.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
 #include <linux/module.h>
+#include <linux/msm_ion.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/poll.h>
+#include <linux/proc_fs.h>
+#include <linux/qtee_shmbridge.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/time.h>
 #include <linux/timekeeping.h>
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+#include <linux/tmelog.h>
+#endif
 #include <linux/types.h>
 #include <linux/uaccess.h>
-#include <linux/of.h>
-#include <linux/dma-buf.h>
 #include <linux/version.h>
 #if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
 #include <linux/firmware/qcom/qcom_scm.h>
 #else
 #include <linux/qcom_scm.h>
 #endif
-#include <linux/qtee_shmbridge.h>
-#include <linux/proc_fs.h>
-#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
-#include <linux/tmelog.h>
-#endif
+#include <linux/wait.h>
+
 
 /* QSEE_LOG_BUF_SIZE = 32K */
 #define QSEE_LOG_BUF_SIZE 0x8000
@@ -1304,11 +1307,16 @@ static int _disp_encrpted_log_stats(struct encrypted_log_info *enc_log_info,
 	if ((!tzdbg.is_full_encrypted_tz_logs_supported) &&
 		(tzdbg.is_full_encrypted_tz_logs_enabled))
 		pr_info("TZ not supporting full encrypted log functionality\n");
+
+	pr_debug("enc_log_info: paddr: 0x%llx, size: %zu\n",
+		 (uint64_t)enc_log_info->paddr, enc_log_info->size);
 	ret = qcom_scm_request_encrypted_log(enc_log_info->paddr,
 		enc_log_info->size, log_id, tzdbg.is_full_encrypted_tz_logs_supported,
 		tzdbg.is_full_encrypted_tz_logs_enabled);
-	if (ret)
+	if (ret) {
+		pr_debug("request_encrypted_log scm failed, ret: %d\n", ret);
 		return 0;
+	}
 	encr_log_head = (struct tzbsp_encr_log_t *)(enc_log_info->vaddr);
 	pr_debug("display_buf_size = %d, encr_log_buff_size = %d\n",
 		display_buf_size, encr_log_head->encr_log_buff_size);
@@ -1362,7 +1370,25 @@ static int _disp_encrpted_log_stats(struct encrypted_log_info *enc_log_info,
 	return len;
 }
 
-static int _disp_tz_log_stats(size_t count)
+static int check_tz_qsee_log_state(struct tzdbg_log_t *log, struct tzdbg_log_pos_t *log_start,
+		struct tzdbg_log_v2_t *log_v2, struct tzdbg_log_pos_v2_t *log_start_v2)
+{
+	int ret = 0;
+
+	if (!tzdbg.is_enlarged_buf) {
+		if (!(log_start->offset == log->log_pos.offset &&
+			log_start->wrap == log->log_pos.wrap))
+			ret = 1;
+	} else {
+		if (!(log_start_v2->offset == log_v2->log_pos.offset &&
+			log_start_v2->wrap == log_v2->log_pos.wrap))
+			ret = 1;
+	}
+
+	return ret;
+}
+
+static int _disp_tz_log_stats(size_t count, bool check_log_state)
 {
 	static struct tzdbg_log_pos_v2_t log_start_v2 = {0};
 	static struct tzdbg_log_pos_t log_start = {0};
@@ -1376,6 +1402,16 @@ static int _disp_tz_log_stats(size_t count)
 	log_v2_ptr = (struct tzdbg_log_v2_t *)((unsigned char *)tzdbg.diag_buf +
 			tzdbg.diag_buf->ring_off -
 			offsetof(struct tzdbg_log_v2_t, log_buf));
+
+	pr_debug("log_start: [wrap,offset]:[0x%x, 0x%x], log_start_v2: [wrap,offset]: [0x%x, 0x%x]\n",
+		log_start.wrap, log_start.offset, log_start_v2.wrap, log_start_v2.offset);
+
+	pr_debug("log_ptr: [wrap,offset]:[0x%x, 0x%x], log_v2_ptr: [wrap,offset]:[0x%x, 0x%x]\n",
+		log_ptr->log_pos.wrap, log_ptr->log_pos.offset,
+		log_v2_ptr->log_pos.wrap, log_v2_ptr->log_pos.offset);
+
+	if (check_log_state)
+		return check_tz_qsee_log_state(log_ptr, &log_start, log_v2_ptr, &log_start_v2);
 
 	if (!tzdbg.is_enlarged_buf)
 		return _disp_log_stats(log_ptr, &log_start,
@@ -1457,7 +1493,7 @@ static int _disp_rm_log_stats(size_t count)
 	return __disp_rm_log_stats(log_ptr, log_len);
 }
 
-static int _disp_qsee_log_stats(size_t count)
+static int _disp_qsee_log_stats(size_t count, bool check_log_state)
 {
 	static struct tzdbg_log_pos_t log_start = {0};
 	static struct tzdbg_log_pos_v2_t log_start_v2 = {0};
@@ -1465,7 +1501,17 @@ static int _disp_qsee_log_stats(size_t count)
 	if (!tzdbg.tz_qsee_plain_log_enabled)
 		return 0;
 
-	pr_debug("Display unencrypted qsee logs!\n");
+	pr_debug("log_start: [wrap,offset]:[0x%x, 0x%x], log_start_v2: [wrap,offset]: [0x%x, 0x%x]\n",
+		log_start.wrap, log_start.offset, log_start_v2.wrap, log_start_v2.offset);
+
+	pr_debug("g_qsee_log: [wrap,offset]:[0x%x, 0x%x], g_qsee_log_v2: [wrap,offset]:[0x%x, 0x%x]\n",
+		g_qsee_log->log_pos.wrap, g_qsee_log->log_pos.offset,
+		g_qsee_log_v2->log_pos.wrap, g_qsee_log_v2->log_pos.offset);
+
+	if (check_log_state)
+		return check_tz_qsee_log_state(g_qsee_log, &log_start,
+					       g_qsee_log_v2, &log_start_v2);
+
 	if (!tzdbg.is_enlarged_buf)
 		return _disp_log_stats(g_qsee_log, &log_start,
 			QSEE_LOG_BUF_SIZE - sizeof(struct tzdbg_log_pos_t),
@@ -1531,7 +1577,7 @@ static int _disp_tme_log_stats(size_t count)
 	/* Copy TME log data to tzdbg diag buffer for the first time */
 	if (!wrap_around) {
 		if (tmelog_process_request(tmecrashdump_address_offset,
-								   TME_LOG_BUF_SIZE, &buf_size)) {
+					   TME_LOG_BUF_SIZE, &buf_size)) {
 			pr_err("Read tme log failed, ret=%d, buf_size: %#x\n", ret, buf_size);
 			return 0;
 		}
@@ -1606,14 +1652,14 @@ static ssize_t tzdbg_fs_read_unencrypted(int tz_id, char __user *buf,
 	case TZDBG_LOG:
 		if (TZBSP_DIAG_MAJOR_VERSION_LEGACY <
 				(tzdbg.diag_buf->version >> 16)) {
-			len = _disp_tz_log_stats(count);
+			len = _disp_tz_log_stats(count, false);
 			*offp = 0;
 		} else {
 			len = _disp_tz_log_stats_legacy();
 		}
 		break;
 	case TZDBG_QSEE_LOG:
-		len = _disp_qsee_log_stats(count);
+		len = _disp_qsee_log_stats(count, false);
 		*offp = 0;
 		break;
 	case TZDBG_HYP_GENERAL:
@@ -1640,6 +1686,64 @@ static ssize_t tzdbg_fs_read_unencrypted(int tz_id, char __user *buf,
 
 	return simple_read_from_buffer(buf, len, offp,
 				tzdbg.stat[tz_id].data, len);
+}
+
+static int is_log_ready(int tz_id)
+{
+	int ret = 0;
+	struct tzbsp_encr_log_t *encr_log_head = NULL;
+	struct encrypted_log_info *enc_log_info = NULL;
+	uint32_t size = 0;
+	uint32_t log_id = 0;
+
+	if (tzdbg.is_encrypted_log_enabled) {
+		if ((!tzdbg.is_full_encrypted_tz_logs_supported)
+				&& (tzdbg.is_full_encrypted_tz_logs_enabled))
+			pr_info("TZ not supporting full encrypted log functionality\n");
+		if (tz_id == TZDBG_LOG) {
+			enc_log_info = &enc_tzlog_info;
+			log_id = ENCRYPTED_TZ_LOG_ID;
+		} else { // Can be qsee log only
+			enc_log_info = &enc_qseelog_info;
+			log_id = ENCRYPTED_QSEE_LOG_ID;
+		}
+		pr_debug("enc_log_info: paddr: 0x%llx, size: %zu\n",
+			 (uint64_t)enc_log_info->paddr, enc_log_info->size);
+		ret = qcom_scm_request_encrypted_log(enc_log_info->paddr,
+			enc_log_info->size, log_id, tzdbg.is_full_encrypted_tz_logs_supported,
+			tzdbg.is_full_encrypted_tz_logs_enabled);
+		if (ret) {
+			pr_debug("request_encrypted_log scm failed, ret: %d\n", ret);
+			return 0;
+		}
+		encr_log_head = (struct tzbsp_encr_log_t *)(enc_log_info->vaddr);
+		size = encr_log_head->encr_log_buff_size;
+
+		/*
+		 * 2nd time scm call always fail due to current QTEE behavior.
+		 * Make another call here so that read system call from userspace get correct logs.
+		 * Do nothing for this scm failure.
+		 *
+		 * This scm might require removal or updation as per QTEE behavior later.
+		 */
+		ret = qcom_scm_request_encrypted_log(enc_log_info->paddr,
+			enc_log_info->size, log_id, tzdbg.is_full_encrypted_tz_logs_supported,
+			tzdbg.is_full_encrypted_tz_logs_enabled);
+		if (ret)
+			pr_debug("2nd request_encrypted_log scm expected to fail, ret: %d\n", ret);
+		ret = size;
+	} else {
+		if (tz_id == TZDBG_LOG) {
+			// update tz_log buffer
+			memcpy_fromio((void *)tzdbg.diag_buf, tzdbg.virt_iobase, debug_rw_buf_size);
+			ret = _disp_tz_log_stats(0, true);
+		} else {
+			ret = _disp_qsee_log_stats(0, true);
+		}
+	}
+
+	pr_debug("log_id: %d, ret: %d\n", log_id, ret);
+	return ret;
 }
 
 static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
@@ -1728,6 +1832,30 @@ static loff_t tzdbg_procfs_lseek(struct file *file, loff_t offset, int whence)
 	return -EOPNOTSUPP;
 }
 
+static __poll_t tzdbg_procfs_poll(struct file *file, struct poll_table_struct *wait)
+{
+	struct seq_file *seq = file->private_data;
+	int tz_id = *(int *)(seq->private);
+
+	/*
+	 * Bail out early if below conditions are met
+	 * 1. Polling available for tz/qsee logs only
+	 * 2. If encryption and plain text logs both are not enabled.
+	 *
+	 * Return POLLERR so that userspace doesn't poll again in this case.
+	 */
+	if (!((tz_id == TZDBG_LOG || tz_id == TZDBG_QSEE_LOG) &&
+		(tzdbg.is_encrypted_log_enabled || tzdbg.tz_qsee_plain_log_enabled)))
+		return POLLERR;
+
+	if (is_log_ready(tz_id)) {
+		pr_debug("Setting polling flag true, tzid: %d!\n", tz_id);
+		return EPOLLIN | EPOLLRDNORM;
+	}
+
+	return 0;
+}
+
 struct proc_ops tzdbg_fops = {
 	.proc_flags   = PROC_ENTRY_PERMANENT,
 	.proc_read    = tzdbg_fs_read,
@@ -1735,6 +1863,7 @@ struct proc_ops tzdbg_fops = {
 	.proc_release = tzdbg_procfs_release,
 /* mandatory unless nonseekable_open() or equivalent is used */
 	.proc_lseek   = tzdbg_procfs_lseek,
+	.proc_poll    = tzdbg_procfs_poll,
 };
 
 static int tzdbg_init_tme_log(struct platform_device *pdev, void __iomem *virt_iobase)
