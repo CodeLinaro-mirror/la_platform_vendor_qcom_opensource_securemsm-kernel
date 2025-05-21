@@ -15,9 +15,6 @@
 #include <linux/elf.h>
 #include "smcinvoke.h"
 #include "smcinvoke_object.h"
-#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
-#include <linux/smci_object.h>
-#endif
 #include "IClientEnv.h"
 #if IS_ENABLED(CONFIG_QSEECOM_COMPAT)
 #include "../IQSEEComCompat.h"
@@ -89,7 +86,7 @@ static void tzobject_delete(struct kref *refs)
 	kfree(me);
 }
 
-int getObjectFromHandle(int handle, struct Object *obj)
+static int getObjectFromHandle(int handle, struct Object *obj)
 {
 	int ret = 0;
 
@@ -108,7 +105,7 @@ int getObjectFromHandle(int handle, struct Object *obj)
 	return ret;
 }
 
-int getHandleFromObject(struct Object obj, int *handle)
+static int getHandleFromObject(struct Object obj, int *handle)
 {
 	int ret = 0;
 
@@ -300,11 +297,22 @@ int get_root_obj(struct Object *rootObj)
 /*
  * Get a client environment using a NULL credentials Object
  */
-static int32_t __get_client_env_object(struct Object *clientEnvObj)
+int32_t get_client_env_object(struct Object *clientEnvObj)
 {
 	int32_t  ret = OBJECT_ERROR;
 	int retry_count = 0;
 	struct Object rootObj = Object_NULL;
+	bool register_with_credential = true;
+	/* Hardcode self cred buffer in CBOR encoded format.
+	 * CBOR encoded credentials is created using following parameters,
+	 * #define ATTR_UID        1
+	 * #define ATTR_PKG_NAME   3
+	 * #define SYSTEM_UID      1000
+	 * static const uint8_t bufString[] = {"UefiSmcInvoke"};
+	 */
+	uint8_t encodedBuf[] = {0xA2, 0x01, 0x19, 0x03, 0xE8, 0x03, 0x6E, 0x55,
+				0x65, 0x66, 0x69, 0x53, 0x6D, 0x63, 0x49, 0x6E,
+				0x76, 0x6F, 0x6B, 0x65, 0x0};
 
 	/* get rootObj */
 	ret = get_root_obj(&rootObj);
@@ -315,8 +323,18 @@ static int32_t __get_client_env_object(struct Object *clientEnvObj)
 
 	/* get client env */
 	do {
-		ret = IClientEnv_registerWithCredentials(rootObj,
-			Object_NULL, clientEnvObj);
+		if (register_with_credential) {
+			ret = IClientEnv_registerWithCredentials(rootObj,
+				Object_NULL, clientEnvObj);
+			if (ret == OBJECT_ERROR_INVALID) {
+				register_with_credential = false;
+				ret = IClientEnv_registerLegacy(rootObj, encodedBuf,
+					sizeof(encodedBuf), clientEnvObj);
+			}
+		} else {
+			ret = IClientEnv_registerLegacy(rootObj, encodedBuf,
+				sizeof(encodedBuf), clientEnvObj);
+		}
 		if (ret == OBJECT_ERROR_BUSY) {
 			pr_err("Secure side is busy,will retry after 5 ms, retry_count = %d",retry_count);
 			msleep(SMCINVOKE_INTERFACE_BUSY_WAIT_MS);
@@ -329,28 +347,7 @@ static int32_t __get_client_env_object(struct Object *clientEnvObj)
 	return ret;
 }
 
-int32_t get_client_env_object(struct Object *clientEnvObj)
-{
-	return __get_client_env_object(clientEnvObj);
-}
 EXPORT_SYMBOL_GPL(get_client_env_object);
-
-#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
-
-static int32_t __smci_get_client_env_object(struct smci_object *client_env_obj)
-{
-	return __get_client_env_object((struct Object *)client_env_obj);
-}
-
-const static struct smci_drv_ops smci_driver_ops = {
-	.smci_get_client_env_object = __smci_get_client_env_object,
-};
-
-int get_smci_kernel_fun_ops(void)
-{
-	return provide_smci_kernel_fun_ops(&smci_driver_ops);
-}
-#endif
 
 #if IS_ENABLED(CONFIG_QSEECOM_COMPAT)
 
