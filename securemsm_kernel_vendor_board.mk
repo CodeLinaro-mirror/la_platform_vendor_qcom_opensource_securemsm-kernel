@@ -19,6 +19,17 @@ ifeq ($(ENABLE_SECUREMSM_DLKM), true)
   ifeq ($(TARGET_USES_SMMU_PROXY), true)
     ENABLE_SMMU_PROXY := true
   endif #TARGET_USES_SMMU_PROXY
+  ifeq ($(filter $(TARGET_BOARD_PLATFORM), canoe vienna),$(TARGET_BOARD_PLATFORM))
+    ENABLE_TMECOM_INTF_DLKM := true
+  endif
+  #enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
+  ifeq ($(ENABLE_HYP),true)
+    ifeq ($(TARGET_BOARD_PLATFORM),gen4)
+      ifneq ($(TARGET_USES_GY), true)
+        ENABLE_QCEDEV_FE := true
+      endif #TARGET_USES_GY
+    endif #TARGET_BOARD_PLATFORM
+  endif #ENABLE_HYP
 endif #ENABLE_SECUREMSM_DLKM
 
 ifeq ($(ENABLE_SECUREMSM_QTEE_DLKM), true)
@@ -39,15 +50,6 @@ ifeq ($(TARGET_USES_GY), true)
   ENABLE_TZLOG_DLKM := false
   ENABLE_QSEECOM_DLKM := false
 endif #TARGET_USES_GY
-
-#enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
-ifeq ($(ENABLE_HYP),true)
-  ifeq ($(TARGET_BOARD_PLATFORM),gen4)
-    ifneq ($(TARGET_USES_GY), true)
-      ENABLE_QCEDEV_FE := true
-    endif #TARGET_USES_GY
-  endif #TARGET_BOARD_PLATFORM
-endif #ENABLE_HYP
 
 ifeq ($(ENABLE_QCRYPTO_DLKM), true)
 BOARD_VENDOR_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/qcedev-mod_dlkm.ko \
@@ -84,6 +86,11 @@ BOARD_VENDOR_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/si_core_test.ko
 BOARD_VENDOR_RAMDISK_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/si_core_test.ko
 BOARD_VENDOR_RAMDISK_RECOVERY_KERNEL_MODULES_LOAD += $(KERNEL_MODULES_OUT)/si_core_test.ko
 endif #ENABLE_SI_CORE_TEST
+
+ifeq ($(ENABLE_TMECOM_INTF_DLKM), true)
+BOARD_VENDOR_KERNEL_MODULES +=  $(KERNEL_MODULES_OUT)/tmecom-intf_dlkm.ko
+BOARD_VENDOR_RAMDISK_KERNEL_MODULES += $(KERNEL_MODULES_OUT)/tmecom-intf_dlkm.ko
+endif # ENABLE_TMECOM_INTF_DLKM
 
 ifeq ($(ENABLE_TZLOG_DLKM), true)
 BOARD_VENDOR_KERNEL_MODULES +=  $(KERNEL_MODULES_OUT)/tz_log_dlkm.ko

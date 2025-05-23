@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "qti-smmu-proxy-common.h"
@@ -10,6 +10,7 @@
 #include <linux/qcom-dma-mapping.h>
 #include <linux/of.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 #define DELAY_MS 30
 #define GH_MSGQ_RECV_RETRY_CNT 10
 
@@ -77,8 +78,15 @@ int smmu_proxy_unmap(void *data)
 	} while (--retry_cnt);
 
 	resp = buf;
+	if (size != sizeof(struct smmu_proxy_unmap_resp) || resp == NULL) {
+		pr_err_ratelimited("%s: Unmap call failed with invalid response: %d\n",
+				__func__, ret);
+		ret = -EINVAL;
+		goto free_buf;
+	}
+
 	if (resp->hdr.ret) {
-		ret = resp->hdr.ret;
+		ret = -EINVAL;
 		pr_err("%s: Unmap call failed on remote VM, rc: %d\n", __func__,
 		       resp->hdr.ret);
 	}
@@ -166,10 +174,17 @@ int smmu_proxy_switch_sid(struct device *client_dev, u32 op)
 	} while (--retry_cnt);
 
 	resp = buf;
+	if (size != sizeof(struct smmu_proxy_switch_sid_resp) || resp == NULL) {
+		pr_err_ratelimited("%s: Switch call failed with invalid response: %d\n",
+				__func__, ret);
+		ret = -EINVAL;
+		goto free_buf;
+	}
+
 	if (resp->hdr.ret) {
-		ret = resp->hdr.ret;
 		pr_err("%s: Switch call failed on remote VM, rc: %d\n", __func__,
 		       resp->hdr.ret);
+		ret = -EINVAL;
 	}
 
 	if (resp->hdr.msg_type != SMMU_PROXY_SWITCH_SID_RESP) {
@@ -278,10 +293,17 @@ int smmu_proxy_map(struct device *client_dev, struct sg_table *proxy_iova,
 	do {
 		ret = gh_msgq_recv(msgq_hdl, buf, sizeof(*resp), &size, flags);
 		if (ret >= 0) {
+			if (size != sizeof(struct smmu_proxy_map_resp) || resp == NULL) {
+				pr_err_ratelimited("%s: Map call failed with invalid response: %d\n",
+						__func__, ret);
+				ret = -EINVAL;
+				goto free_buf;
+			}
+
 			if (resp->hdr.ret) {
-				ret = resp->hdr.ret;
 				pr_err_ratelimited("%s: Map call failed on remote VM, rc: %d\n",
 						__func__, resp->hdr.ret);
+				ret = -EINVAL;
 				goto free_buf;
 			}
 
@@ -449,5 +471,10 @@ int __init init_smmu_proxy_driver(void)
 }
 module_init(init_smmu_proxy_driver);
 
+#if (KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE)
+MODULE_IMPORT_NS("DMA_BUF");
+#else
 MODULE_IMPORT_NS(DMA_BUF);
+#endif
+
 MODULE_LICENSE("GPL v2");

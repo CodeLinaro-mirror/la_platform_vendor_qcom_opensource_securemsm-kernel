@@ -1,8 +1,8 @@
 load(":securemsm_kernel.bzl", "define_consolidate_gki_modules")
 
-def define_canoe():
+def define_vienna():
     define_consolidate_gki_modules(
-        target = "canoe",
+        target = "vienna",
         modules = [
             "smcinvoke_dlkm",
             "tz_log_dlkm",
@@ -16,10 +16,9 @@ def define_canoe():
             "tmecom-intf_dlkm",
          ],
          extra_options = [
-             "CONFIG_QCOM_SMCINVOKE",
-             "CONFIG_QSEECOM_COMPAT",
-             "CONFIG_QCOM_SI_CORE",
-             "CONFIG_MSM_TMECOM_QMP",
-             "CONFIG_TZLOG_TIME_CONSOLIDATE",
+            "CONFIG_QCOM_SMCINVOKE",
+            "CONFIG_QSEECOM_COMPAT",
+            "CONFIG_QCOM_SI_CORE",
+            "CONFIG_MSM_TMECOM_QMP",
          ],
      )

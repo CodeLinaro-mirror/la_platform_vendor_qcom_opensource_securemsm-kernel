@@ -14,15 +14,6 @@ ifeq ($(TARGET_KERNEL_DLKM_DISABLE), true)
   endif
 endif
 
-#enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
-ifeq ($(ENABLE_HYP),true)
-  ifeq ($(TARGET_BOARD_PLATFORM),gen4)
-    ifneq ($(TARGET_USES_GY), true)
-      ENABLE_QCEDEV_FE := true
-    endif #TARGET_USES_GY
-  endif #TARGET_BOARD_PLATFORM
-endif #ENABLE_HYP
-
 ifeq ($(ENABLE_SECUREMSM_DLKM), true)
   ENABLE_QCRYPTO_DLKM := true
   ENABLE_HDCP_QSEECOM_DLKM := true
@@ -30,6 +21,17 @@ ifeq ($(ENABLE_SECUREMSM_DLKM), true)
   ifeq ($(TARGET_USES_SMMU_PROXY), true)
     ENABLE_SMMU_PROXY := true
   endif #TARGET_USES_SMMU_PROXY
+  ifeq ($(filter $(TARGET_BOARD_PLATFORM), canoe vienna),$(TARGET_BOARD_PLATFORM))
+    ENABLE_TMECOM_INTF_DLKM := true
+  endif
+  #enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
+  ifeq ($(ENABLE_HYP),true)
+    ifeq ($(TARGET_BOARD_PLATFORM),gen4)
+      ifneq ($(TARGET_USES_GY), true)
+        ENABLE_QCEDEV_FE := true
+      endif #TARGET_USES_GY
+    endif #TARGET_BOARD_PLATFORM
+  endif #ENABLE_HYP
 endif #ENABLE_SECUREMSM_DLKM
 
 ifeq ($(ENABLE_SECUREMSM_QTEE_DLKM), true)
@@ -76,6 +78,10 @@ endif #ENABLE_SMCINVOKE_DLKM
 ifeq ($(ENABLE_SI_CORE_TEST), true)
 PRODUCT_PACKAGES += si_core_test.ko
 endif #ENABLE_SI_CORE_TEST
+
+ifeq ($(ENABLE_TMECOM_INTF_DLKM), true)
+PRODUCT_PACKAGES += tmecom-intf_dlkm.ko
+endif #ENABLE_TMECOM_INTF_DLKM
 
 ifeq ($(ENABLE_TZLOG_DLKM), true)
 PRODUCT_PACKAGES += tz_log_dlkm.ko

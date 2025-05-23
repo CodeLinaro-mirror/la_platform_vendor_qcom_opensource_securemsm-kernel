@@ -20,6 +20,17 @@ ifeq ($(ENABLE_SECUREMSM_DLKM), true)
   ifeq ($(TARGET_USES_SMMU_PROXY), true)
     ENABLE_SMMU_PROXY := true
   endif #TARGET_USES_SMMU_PROXY
+  ifeq ($(filter $(TARGET_BOARD_PLATFORM), canoe vienna),$(TARGET_BOARD_PLATFORM))
+    ENABLE_TMECOM_INTF_DLKM := true
+  endif
+  #enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
+  ifeq ($(ENABLE_HYP),true)
+    ifeq ($(TARGET_BOARD_PLATFORM),gen4)
+      ifneq ($(TARGET_USES_GY), true)
+        ENABLE_QCEDEV_FE := true
+      endif #TARGET_USES_GY
+    endif #TARGET_BOARD_PLATFORM
+  endif #ENABLE_HYP
 endif #ENABLE_SECUREMSM_DLKM
 
 ifeq ($(ENABLE_SECUREMSM_QTEE_DLKM), true)
@@ -41,14 +52,6 @@ ifeq ($(TARGET_USES_GY), true)
   ENABLE_QSEECOM_DLKM := false
 endif #TARGET_USES_GY
 
-#enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
-ifeq ($(ENABLE_HYP),true)
-  ifeq ($(TARGET_BOARD_PLATFORM),gen4)
-    ifneq ($(TARGET_USES_GY), true)
-      ENABLE_QCEDEV_FE := true
-    endif #TARGET_USES_GY
-  endif #TARGET_BOARD_PLATFORM
-endif #ENABLE_HYP
 
 LOCAL_PATH := $(call my-dir)
 
@@ -119,6 +122,18 @@ LOCAL_MODULE_DEBUG_ENABLE := true
 LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
 include $(DLKM_DIR)/Build_external_kernelmodule.mk
 endif #ENABLE_QSEECOM_DLKM
+###################################################
+###################################################
+ifeq ($(ENABLE_TMECOM_INTF_DLKM), true)
+include $(CLEAR_VARS)
+LOCAL_SRC_FILES           := $(SSG_SRC_FILES)
+LOCAL_MODULE              := tmecom-intf_dlkm.ko
+LOCAL_MODULE_KBUILD_NAME  := tmecom-intf_dlkm.ko
+LOCAL_MODULE_TAGS         := optional
+LOCAL_MODULE_DEBUG_ENABLE := true
+LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
+include $(DLKM_DIR)/Build_external_kernelmodule.mk
+endif #ENABLE_TMECOM_INTF_DLKM
 ###################################################
 ###################################################
 ifeq ($(ENABLE_SI_CORE_TEST), true)
