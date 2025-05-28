@@ -67,9 +67,7 @@ register_securemsm_module(
     path = SMCINVOKE_PATH,
     default_srcs = [
         "IQSEEComCompat.h",
-        "smci_qseecomcompat.h",
         "IQSEEComCompatAppLoader.h",
-        "smci_qseecomcompatapploader.h",
     ],
     config_srcs = {
         "CONFIG_QCOM_SI_CORE": {
@@ -82,6 +80,7 @@ register_securemsm_module(
             False: [
                 "compat/smcinvoke.c",
                 "compat/smcinvoke_kernel.c",
+                "compat/smci_kernel.c",
                 "compat/trace_smcinvoke.h",
             ],
         }
