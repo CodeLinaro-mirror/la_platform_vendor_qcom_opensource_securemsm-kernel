@@ -20,6 +20,5 @@ def define_canoe():
              "CONFIG_QSEECOM_COMPAT",
              "CONFIG_QCOM_SI_CORE",
              "CONFIG_MSM_TMECOM_QMP",
-             "CONFIG_TZLOG_TIME_CONSOLIDATE",
          ],
      )
