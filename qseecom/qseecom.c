@@ -59,6 +59,12 @@
 #include "qseecom_32bit_impl.h"
 #endif
 
+#ifdef CONFIG_PM
+#define QSEECOM_PMOPS (&qseecom_pm_ops)
+#else
+#define QSEECOM_PMOPS NULL
+#endif
+
 #define QSEECOM_DEV			"qseecom"
 #define QSEOS_VERSION_14		0x14
 #define QSEEE_VERSION_00		0x400000
@@ -3359,6 +3365,7 @@ static int qseecom_prepare_unload_app(struct qseecom_dev_handle *data)
 				data->client.attach, data->client.dmabuf);
 		}
 		data->released = true;
+		__qseecom_free_tzbuf(&data->sglistinfo_shm);
 		return 0;
 	}
 
@@ -9909,8 +9916,11 @@ exit_unregister_bridge:
 	return rc;
 }
 
-
+#if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 static int qseecom_remove(struct platform_device *pdev)
+#else
+static void qseecom_remove(struct platform_device *pdev)
+#endif
 {
 	struct qseecom_registered_kclient_list *kclient = NULL;
 	struct qseecom_registered_kclient_list *kclient_tmp = NULL;
@@ -9954,10 +9964,13 @@ static int qseecom_remove(struct platform_device *pdev)
 	qseecom_deinit_clk();
 	qseecom_release_ce_data();
 	qseecom_deinit_dev();
+#if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 	return ret;
+#endif
 }
 
-static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
+#ifdef CONFIG_PM
+static int qseecom_suspend(struct device *dev)
 {
 	int ret = 0;
 	struct qseecom_clk *qclk;
@@ -9999,7 +10012,7 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 
-static int qseecom_resume(struct platform_device *pdev)
+static int qseecom_resume(struct device *dev)
 {
 	int mode = 0;
 	int ret = 0;
@@ -10081,6 +10094,14 @@ exit:
 	return ret;
 }
 
+static const struct dev_pm_ops qseecom_pm_ops = {
+	.suspend_late = qseecom_suspend,
+	.resume_early = qseecom_resume,
+	.freeze_late = qseecom_suspend,
+	.restore_early = qseecom_resume,
+};
+#endif
+
 static const struct of_device_id qseecom_match[] = {
 	{
 		.compatible = "qcom,qseecom",
@@ -10091,10 +10112,9 @@ static const struct of_device_id qseecom_match[] = {
 static struct platform_driver qseecom_plat_driver = {
 	.probe = qseecom_probe,
 	.remove = qseecom_remove,
-	.suspend = qseecom_suspend,
-	.resume = qseecom_resume,
 	.driver = {
 		.name = "qseecom",
+		.pm = QSEECOM_PMOPS,
 		.of_match_table = qseecom_match,
 	},
 };
