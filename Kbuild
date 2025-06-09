@@ -77,8 +77,19 @@ ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) 
     endif
 endif
 
-#Enable QCE Dev Frontend if CONFIG_QTI_QUIN_GVM or CONFIG_ARCH_QTI_VM is set to y
-ifneq (, $(filter y, $(CONFIG_ARCH_QTI_VM) $(CONFIG_QTI_QUIN_GVM)))
+#Enable QCE Dev Frontend if CONFIG_QTI_QUIN_GVM (HQX) is set to y
+ifeq ($(CONFIG_QTI_QUIN_GVM),y)
+    enable_qcedev_fe := y
+
+#Enable QCE Dev Frontend if CONFIG_ARCH_QTI_VM is defined AND
+#CONFIG_ARCH_LEMANS OR CONFIG_ARCH_MONACO is set to y
+else ifeq ($(CONFIG_ARCH_QTI_VM),y)
+    ifneq (,$(filter y,$(CONFIG_ARCH_LEMANS) $(CONFIG_ARCH_MONACO_AUTO)))
+        enable_qcedev_fe := y
+    endif
+endif
+
+ifeq ($(enable_qcedev_fe),y)
 
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
