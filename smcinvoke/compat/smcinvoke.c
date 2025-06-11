@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "smcinvoke: %s: " fmt, __func__
@@ -36,8 +36,12 @@
 #include <asm/cacheflush.h>
 #include <linux/qtee_shmbridge.h>
 #include <linux/kthread.h>
+#include <linux/of.h>
 #include "smcinvoke.h"
 #include "smcinvoke_object.h"
+#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
+#include <linux/smci_object.h>
+#endif
 #include "IClientEnv.h"
 #if IS_ENABLED(CONFIG_QSEECOM_PROXY)
 #include <linux/qseecom_kernel.h>
@@ -206,6 +210,10 @@ static long smcinvoke_ioctl(struct file *, unsigned int, unsigned long);
 static int smcinvoke_open(struct inode *, struct file *);
 static int smcinvoke_release(struct inode *, struct file *);
 static int release_cb_server(uint16_t);
+#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
+int get_smci_kernel_fun_ops(void);
+#endif
+
 
 static const struct file_operations g_smcinvoke_fops = {
 	.owner		= THIS_MODULE,
@@ -3253,6 +3261,14 @@ static int smcinvoke_probe(struct platform_device *pdev)
 		pr_err("failed to get qseecom kernel func ops %d", rc);
 	}
 #endif
+#if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
+	/*If the api fails to get the func ops, print the error and continue
+	* Do not treat it as fatal*/
+	rc = get_smci_kernel_fun_ops();
+	if (rc) {
+		pr_err("failed to get smci kernel func ops %d", rc);
+	}
+#endif
 	__wakeup_postprocess_kthread(&smcinvoke[ADCI_WORKER_THREAD]);
 	return 0;
 
@@ -3267,7 +3283,11 @@ exit_destroy_wkthread:
 	return rc;
 }
 
+#if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 static int smcinvoke_remove(struct platform_device *pdev)
+#else
+static void smcinvoke_remove(struct platform_device *pdev)
+#endif
 {
 	int count = 1;
 
@@ -3276,7 +3296,9 @@ static int smcinvoke_remove(struct platform_device *pdev)
 	device_destroy(driver_class, smcinvoke_device_no);
 	class_destroy(driver_class);
 	unregister_chrdev_region(smcinvoke_device_no, count);
+#if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 	return 0;
+#endif
 }
 
 static int __maybe_unused smcinvoke_suspend(struct platform_device *pdev,

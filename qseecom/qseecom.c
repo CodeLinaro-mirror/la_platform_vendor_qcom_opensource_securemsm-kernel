@@ -59,6 +59,12 @@
 #include "qseecom_32bit_impl.h"
 #endif
 
+#ifdef CONFIG_PM
+#define QSEECOM_PMOPS (&qseecom_pm_ops)
+#else
+#define QSEECOM_PMOPS NULL
+#endif
+
 #define QSEECOM_DEV			"qseecom"
 #define QSEOS_VERSION_14		0x14
 #define QSEEE_VERSION_00		0x400000
@@ -405,7 +411,7 @@ struct qseecom_control {
 	wait_queue_head_t register_lsnr_pending_wq;
 	struct task_struct *unregister_lsnr_kthread_task;
 	wait_queue_head_t unregister_lsnr_kthread_wq;
-	atomic_t unregister_lsnr_kthread_state;
+	atomic_t unregister_lsnr_kthread_work_pending;
 
 	struct list_head  unload_app_pending_list_head;
 	struct task_struct *unload_app_kthread_task;
@@ -1735,8 +1741,8 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 				list_empty(
 				&qseecom.unregister_lsnr_pending_list_head));
 			if (ret) {
-				pr_err("interrupted register_pending_wq %d\n",
-						rcvd_lstnr.listener_id);
+				pr_err("interrupted register_pending_wq %d, ret: %d\n",
+						rcvd_lstnr.listener_id, ret);
 				mutex_lock(&listener_access_lock);
 				return -ERESTARTSYS;
 			}
@@ -1898,7 +1904,7 @@ static void __qseecom_processing_pending_lsnr_unregister(void)
 						entry->data->listener.id);
 				/* don't process the entry if qseecom_release is not called*/
 				if (!entry->data->listener.release_called) {
-					pr_err("listener release yet to be called for lstnr :%d\n",
+					pr_debug("listener release yet to be called for lstnr :%d\n",
 						entry->data->listener.id);
 					pos = pos->next;
 					continue;
@@ -1934,24 +1940,25 @@ static void __qseecom_processing_pending_lsnr_unregister(void)
 
 static void __wakeup_unregister_listener_kthread(void)
 {
-	atomic_set(&qseecom.unregister_lsnr_kthread_state,
-				LSNR_UNREG_KT_WAKEUP);
+	atomic_inc(&qseecom.unregister_lsnr_kthread_work_pending);
 	wake_up_interruptible(&qseecom.unregister_lsnr_kthread_wq);
 }
 
 static int __qseecom_unregister_listener_kthread_func(void *data)
 {
 	while (!kthread_should_stop()) {
-		wait_event_interruptible(
-			qseecom.unregister_lsnr_kthread_wq,
-			atomic_read(&qseecom.unregister_lsnr_kthread_state)
-				== LSNR_UNREG_KT_WAKEUP);
-		pr_debug("kthread to unregister listener is called %d\n",
-			atomic_read(&qseecom.unregister_lsnr_kthread_state));
-		__qseecom_processing_pending_lsnr_unregister();
-		atomic_set(&qseecom.unregister_lsnr_kthread_state,
-				LSNR_UNREG_KT_SLEEP);
+		wait_event_interruptible(qseecom.unregister_lsnr_kthread_wq,
+			atomic_read(&qseecom.unregister_lsnr_kthread_work_pending) > 0 ||
+			kthread_should_stop());
+
+		/* Process all pending work */
+		while (atomic_dec_if_positive(&qseecom.unregister_lsnr_kthread_work_pending) >= 0) {
+			pr_debug("kthread to unregister listener is processing work, pending: %d\n",
+				 atomic_read(&qseecom.unregister_lsnr_kthread_work_pending));
+			__qseecom_processing_pending_lsnr_unregister();
+		}
 	}
+
 	pr_warn("kthread to unregister listener stopped\n");
 	return 0;
 }
@@ -3359,6 +3366,7 @@ static int qseecom_prepare_unload_app(struct qseecom_dev_handle *data)
 				data->client.attach, data->client.dmabuf);
 		}
 		data->released = true;
+		__qseecom_free_tzbuf(&data->sglistinfo_shm);
 		return 0;
 	}
 
@@ -9764,8 +9772,7 @@ static int qseecom_create_kthreads(void)
 		pr_err("fail to create kthread to unreg lsnr, rc = %x\n", rc);
 		return rc;
 	}
-	atomic_set(&qseecom.unregister_lsnr_kthread_state,
-					LSNR_UNREG_KT_SLEEP);
+	atomic_set(&qseecom.unregister_lsnr_kthread_work_pending, 0);
 
 	/*create a kthread to process pending ta unloading task */
 	qseecom.unload_app_kthread_task = kthread_run(
@@ -9909,8 +9916,11 @@ exit_unregister_bridge:
 	return rc;
 }
 
-
+#if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 static int qseecom_remove(struct platform_device *pdev)
+#else
+static void qseecom_remove(struct platform_device *pdev)
+#endif
 {
 	struct qseecom_registered_kclient_list *kclient = NULL;
 	struct qseecom_registered_kclient_list *kclient_tmp = NULL;
@@ -9954,10 +9964,13 @@ static int qseecom_remove(struct platform_device *pdev)
 	qseecom_deinit_clk();
 	qseecom_release_ce_data();
 	qseecom_deinit_dev();
+#if KERNEL_VERSION(6, 10, 0) > LINUX_VERSION_CODE
 	return ret;
+#endif
 }
 
-static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
+#ifdef CONFIG_PM
+static int qseecom_suspend(struct device *dev)
 {
 	int ret = 0;
 	struct qseecom_clk *qclk;
@@ -9999,7 +10012,7 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 
-static int qseecom_resume(struct platform_device *pdev)
+static int qseecom_resume(struct device *dev)
 {
 	int mode = 0;
 	int ret = 0;
@@ -10081,6 +10094,14 @@ exit:
 	return ret;
 }
 
+static const struct dev_pm_ops qseecom_pm_ops = {
+	.suspend_late = qseecom_suspend,
+	.resume_early = qseecom_resume,
+	.freeze_late = qseecom_suspend,
+	.restore_early = qseecom_resume,
+};
+#endif
+
 static const struct of_device_id qseecom_match[] = {
 	{
 		.compatible = "qcom,qseecom",
@@ -10091,10 +10112,9 @@ static const struct of_device_id qseecom_match[] = {
 static struct platform_driver qseecom_plat_driver = {
 	.probe = qseecom_probe,
 	.remove = qseecom_remove,
-	.suspend = qseecom_suspend,
-	.resume = qseecom_resume,
 	.driver = {
 		.name = "qseecom",
+		.pm = QSEECOM_PMOPS,
 		.of_match_table = qseecom_match,
 	},
 };
