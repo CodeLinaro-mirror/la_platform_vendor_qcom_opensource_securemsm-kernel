@@ -18,7 +18,9 @@ endif
 ifeq ($(ENABLE_HYP),true)
   ifeq ($(TARGET_BOARD_PLATFORM),gen4)
     ifneq ($(TARGET_USES_GY), true)
-      ENABLE_QCEDEV_FE := true
+      ifneq ($(filter $(PLATFORM_VERSION), 16 Baklava),$(PLATFORM_VERSION))
+        ENABLE_QCEDEV_FE := true
+      endif
     endif #TARGET_USES_GY
   endif #TARGET_BOARD_PLATFORM
 endif #ENABLE_HYP
@@ -44,9 +46,9 @@ endif #ENABLE_SECUREMSM_QTEE_DLKM
 ifeq ($(TARGET_USES_GY), true)
   ENABLE_QCRYPTO_DLKM := false
   ENABLE_HDCP_QSEECOM_DLKM := false
-  ENABLE_QRNG_DLKM := true
+  ENABLE_QRNG_DLKM := false
   ENABLE_SMMU_PROXY := false
-  ENABLE_SMCINVOKE_DLKM := true
+  ENABLE_SMCINVOKE_DLKM := false
   ENABLE_TZLOG_DLKM := false
   ENABLE_QSEECOM_DLKM := false
 endif #TARGET_USES_GY
@@ -86,5 +88,7 @@ PRODUCT_PACKAGES += qseecom_dlkm.ko
 endif #ENABLE_QSEECOM_DLKM
 
 ifeq ($(ENABLE_QCEDEV_FE), true)
+ifneq ($(filter $(PLATFORM_VERSION), 16 Baklava),$(PLATFORM_VERSION))
 PRODUCT_PACKAGES += qcedev_fe_dlkm.ko
+endif
 endif #ENABLE_QCEDEV_FE
