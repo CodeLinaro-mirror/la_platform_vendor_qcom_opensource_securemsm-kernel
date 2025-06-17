@@ -36,6 +36,7 @@
 #include <asm/cacheflush.h>
 #include <linux/qtee_shmbridge.h>
 #include <linux/kthread.h>
+#include <linux/of.h>
 #include "smcinvoke.h"
 #include "smcinvoke_object.h"
 #if IS_ENABLED(CONFIG_QCOM_SMCI_PROXY)
