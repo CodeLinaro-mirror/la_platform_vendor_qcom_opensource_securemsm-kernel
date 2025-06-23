@@ -24,7 +24,7 @@ ifeq ($(CONFIG_ARCH_QTI_VM), y)
     endif
 endif
 
-ifeq ($(CONFIG_ARCH_NIOBE), y)
+ifneq (, $(filter y, $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH)))
 ccflags-y += -DCONFIG_QCOM_LEGACY_ADDRESS_BUS_SIZE=1
 endif
 
