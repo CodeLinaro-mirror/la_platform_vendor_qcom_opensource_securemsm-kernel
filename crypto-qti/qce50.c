@@ -28,7 +28,7 @@
 #include <soc/qcom/socinfo.h>
 #include <linux/iommu.h>
 #include <linux/interrupt.h>
-
+#include <linux/version.h>
 #include "qcrypto.h"
 #include "qce.h"
 #include "qce50.h"
@@ -2974,8 +2974,11 @@ static void qce_multireq_timeout(struct timer_list *data)
 	cmpxchg(&pce_dev->owner, QCE_OWNER_TIMEOUT, QCE_OWNER_NONE);
 	pce_dev->mode = IN_INTERRUPT_MODE;
 	local_irq_restore(flags);
-
+	#if (KERNEL_VERSION(6, 15, 0) > LINUX_VERSION_CODE)
 	del_timer(&(pce_dev->timer));
+	#else
+	timer_delete(&(pce_dev->timer));
+	#endif
 	pce_dev->qce_stats.no_of_timeouts++;
 	pr_debug("pcedev %d mode switch to INTR\n", pce_dev->dev_no);
 }
@@ -6341,8 +6344,8 @@ static int qce_smmu_init(struct qce_device *pce_dev)
 		if (!dev->dma_parms)
 			return -ENOMEM;
 	}
-	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
-	dma_set_seg_boundary(dev, (unsigned long)DMA_BIT_MASK(64));
+	dma_set_max_seg_size(dev, (unsigned int)DMA_BIT_MASK(32));
+	dma_set_seg_boundary(dev, (unsigned long)(u64)DMA_BIT_MASK(64));
 	return 0;
 }
 
