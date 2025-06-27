@@ -4,7 +4,7 @@
  * QTI Crypto Engine driver.
  *
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #define pr_fmt(fmt) "QCE50: %s: " fmt, __func__
@@ -2279,7 +2279,7 @@ static int _qce_sps_add_data(struct qce_device *pce_dev,
 		if (len > SPS_MAX_PKT_SIZE) {
 			data_cnt = SPS_MAX_PKT_SIZE;
 		} else {
-			if (is_crypto_600(pce_dev) && out_pipe) {
+			if (is_crypto_600(pce_dev) && out_pipe && pce_dev->fifo_eco_unavailable) {
 				if ((sps_bam_pipe->iovec_count % 2) == 0) {
 					if (results_dump_enabled) {
 						data_cnt = len;
@@ -5358,17 +5358,18 @@ int qce_ablk_cipher_req(void *handle, struct qce_req *c_req)
 	_qce_set_flag(&pce_sps_data->in_transfer,
 				SPS_IOVEC_FLAG_EOT|SPS_IOVEC_FLAG_NWD);
 
-	if (pce_dev->no_get_around) {
-		if (is_crypto_600(pce_dev)) {
-			if ((get_desc_count(&pce_sps_data->in_transfer) % 2) == 0) {
-				// Add a dummy descriptor due to HW bug
-				rc = _qce_sps_add_cmd(pce_dev, 0,
-					&pce_sps_data->cmdlistptr.unlock_all_pipes,
-					&pce_sps_data->in_transfer);
-				if (rc)
-					goto bad;
-			}
+	if (is_crypto_600(pce_dev) && pce_dev->fifo_eco_unavailable) {
+		if ((get_desc_count(&pce_sps_data->in_transfer) % 2) == 0) {
+			// Add a dummy descriptor due to HW bug
+			rc = _qce_sps_add_cmd(pce_dev, 0,
+				&pce_sps_data->cmdlistptr.unlock_all_pipes,
+				&pce_sps_data->in_transfer);
+			if (rc)
+				goto bad;
 		}
+	}
+
+	if (pce_dev->no_get_around) {
 		rc = _qce_sps_add_cmd(pce_dev, SPS_IOVEC_FLAG_UNLOCK,
 			&pce_sps_data->cmdlistptr.unlock_all_pipes,
 			&pce_sps_data->in_transfer);
