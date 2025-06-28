@@ -1,41 +1,46 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #define pr_fmt(fmt) "tz_log :[%s]: " fmt, __func__
 
 #include <linux/compiler.h>
 #include <linux/debugfs.h>
-#include <linux/errno.h>
 #include <linux/delay.h>
+#include <linux/dma-buf.h>
+#include <linux/errno.h>
 #include <linux/io.h>
-#include <linux/msm_ion.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
+#include <linux/list.h>
 #include <linux/module.h>
+#include <linux/msm_ion.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/poll.h>
+#include <linux/proc_fs.h>
+#include <linux/qtee_shmbridge.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/time.h>
 #include <linux/timekeeping.h>
+#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
+#include <linux/tmelog.h>
+#endif
 #include <linux/types.h>
 #include <linux/uaccess.h>
-#include <linux/of.h>
-#include <linux/dma-buf.h>
 #include <linux/version.h>
 #if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
 #include <linux/firmware/qcom/qcom_scm.h>
 #else
 #include <linux/qcom_scm.h>
 #endif
-#include <linux/qtee_shmbridge.h>
-#include <linux/proc_fs.h>
-#if IS_ENABLED(CONFIG_MSM_TMECOM_QMP)
-#include <linux/tmelog.h>
-#endif
+#include <linux/wait.h>
+
 
 /* QSEE_LOG_BUF_SIZE = 32K */
 #define QSEE_LOG_BUF_SIZE 0x8000
@@ -107,6 +112,16 @@
 #define BASE_16 16
 #define NS_TO_10_US_BASE 10000
 #define US_TO_10_NS_BASE 10000
+
+/*
+ * Mutex for logs read, since we have only one display buf
+ */
+DEFINE_MUTEX(tzdbg_mutex);
+
+/*
+ * List of clients to tzlog driver
+ */
+LIST_HEAD(clients_list);
 
 /*
  * VMID Table
@@ -207,6 +222,18 @@ struct tzdbg_log_pos_t {
 struct tzdbg_log_pos_v2_t {
 	uint32_t wrap;
 	uint32_t offset;
+};
+
+/*
+ * Client`s info
+ */
+struct clients_info_t {
+	size_t display_offset;
+	size_t display_len;
+	struct file *file;
+	struct list_head list;
+	struct tzdbg_log_pos_t log_start;
+	struct tzdbg_log_pos_v2_t log_start_v2;
 };
 
  /*
@@ -515,6 +542,8 @@ static uint64_t g_tz_ticks_frequency;
 static ktime_t g_hlos_uptime_baseline;
 #endif
 
+static atomic_t is_rd_locked = ATOMIC_INIT(0);
+
 /*
  * Debugfs data structure and functions
  */
@@ -523,6 +552,8 @@ static int _disp_tz_general_stats(void)
 {
 	int len = 0;
 
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	len += scnprintf(tzdbg.disp_buf + len, debug_rw_buf_size - 1,
 			"   Version        : 0x%x\n"
 			"   Magic Number   : 0x%x\n"
@@ -545,6 +576,9 @@ static int _disp_tz_vmid_stats(void)
 	num_vmid = ((tzdbg.diag_buf->boot_info_off -
 				tzdbg.diag_buf->vmid_info_off)/
 					(sizeof(struct tzdbg_vmid_t)));
+
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 
 	for (i = 0; i < num_vmid; i++) {
 		if (ptr->vmid < 0xFF) {
@@ -581,6 +615,8 @@ static int _disp_tz_boot_stats(void)
 			tzdbg.diag_buf + tzdbg.diag_buf->boot_info_off);
 	}
 
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	for (i = 0; i < tzdbg.diag_buf->cpu_count; i++) {
 		if (tzdbg.tz_version >= QSEE_VERSION_TZ_3_X) {
 			len += scnprintf(tzdbg.disp_buf + len,
@@ -645,6 +681,8 @@ static int _disp_tz_reset_stats(void)
 	ptr = (struct tzdbg_reset_info_t *)((unsigned char *)tzdbg.diag_buf +
 					tzdbg.diag_buf->reset_info_off);
 
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	for (i = 0; i < tzdbg.diag_buf->cpu_count; i++) {
 		len += scnprintf(tzdbg.disp_buf + len,
 				(debug_rw_buf_size - 1) - len,
@@ -681,6 +719,8 @@ static int _disp_tz_interrupt_stats(void)
 
 	pr_info("qsee_version = 0x%x\n", tzdbg.tz_version);
 
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	if (tzdbg.tz_version < QSEE_VERSION_TZ_4_X) {
 		tzdbg_ptr = ptr;
 		for (i = 0; i < (*num_int); i++) {
@@ -750,6 +790,9 @@ static int _disp_tz_log_stats_legacy(void)
 
 	ptr = (unsigned char *)tzdbg.diag_buf +
 					tzdbg.diag_buf->ring_off;
+
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	len += scnprintf(tzdbg.disp_buf, (debug_rw_buf_size - 1) - len,
 							"%s\n", ptr);
 
@@ -780,6 +823,17 @@ static uint32_t _copy_to_dispbuf(struct tzdbg_log_t *log, struct tzdbg_log_pos_t
 }
 
 #if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+/*
+ * Calculate the length of log based on the end label "\r\n"
+ *
+ * Input  : buf : the initial log data buffer
+ *          begin : the begin index of buffer
+ *          end : the end index of buffer
+ *          remain : the maxinum length of buffer that can be used to parse
+ *          log_len : the length of the ring buffer
+ *
+ * Return : len for the length of log that is ended with "\r\n" or -EINVAL for failure
+ */
 static int _find_end_label(const uint8_t *buf, uint32_t begin, uint32_t end, uint32_t remain,
 	uint32_t log_len)
 {
@@ -798,13 +852,29 @@ static int _find_end_label(const uint8_t *buf, uint32_t begin, uint32_t end, uin
 	return -EINVAL;
 }
 
+/*
+ * Parse the log with the format "[ticks]...\r\n" to extract the ticks information. Calculate the
+ * corresponding real-time and generate a timestamp string in the format
+ * [realtime][hlos uptime][tz uptime].
+ *
+ * Input  : buf : the initial log data buffer
+ *          begin : the begin index of log data in the buffer
+ *          len : the length of log data buffer
+ *          round : the length of the ring buffer
+ *          stamp_len : the length of the timestamp string buffer
+ *
+ * Output : timestamp : the timetamp string buffer
+ *          next : the position next to ']'.
+ *
+ * Return : len for the size of timestamp string or -EINVAL for failure.
+ */
 static int _generate_realtime_timestamp(const char *buf, uint32_t begin, uint32_t len,
 	uint32_t round,	char *timestamp, uint32_t stamp_len, uint32_t *next)
 {
 	uint32_t index = 0;
 	uint64_t ticks = 0;
 	char ticks_str[TICKS_STR_LEN] = {0};
-	ktime_t hlos_t = 0;
+	ktime_t hlos_t = g_hlos_uptime_baseline;
 	ktime_t hlos_realtime_t = 0;
 	ktime_t tz_t = 0;
 	struct timespec64 hlos_ts = {};
@@ -813,10 +883,12 @@ static int _generate_realtime_timestamp(const char *buf, uint32_t begin, uint32_
 	struct rtc_time hlos_rtc_t = {};
 	uint32_t size = 0;
 
-	// Considering three situations.
-	// 1. Normal log : [ticks]... --> parse the ticks.
-	// 2. Abnormal log : [invalid ticks]...--> Not parse the ticks.
-	// 3. Abnormal log : XXX]... --> Not parse the ticks.
+	/*
+	 * Considering three situations about ticks.
+	 * 1. Normal log : [ticks]... --> parse the ticks.
+	 * 2. Abnormal log : [invalid ticks]...--> Not parse the ticks.
+	 * 3. Abnormal log : XXX]... --> Not parse the ticks.
+	 */
 	if (buf[begin] != '[')
 		return -EINVAL;
 
@@ -836,9 +908,7 @@ static int _generate_realtime_timestamp(const char *buf, uint32_t begin, uint32_
 	if (index == len || index == sizeof(ticks_str))
 		return -EINVAL;
 
-	hlos_t = g_hlos_uptime_baseline;
-
-	// Calculate the relevant hlos uptime based on hlos uptime baseline and tz time interval.
+	/* Calculate the relevant hlos uptime based on hlos uptime baseline and tz time interval. */
 	if (likely(ticks > g_tz_ticks_baseline))
 		hlos_t += (ticks - g_tz_ticks_baseline) * US_TO_10_NS_BASE / g_tz_ticks_frequency;
 	else
@@ -852,7 +922,7 @@ static int _generate_realtime_timestamp(const char *buf, uint32_t begin, uint32_
 	tz_ts = ktime_to_timespec64(tz_t);
 
 	size = scnprintf(timestamp, stamp_len,
-			"[%02d-%02d %02d:%02d:%02d.%05ld][%lld:%05ld][%lld:%05ld]",
+			"[%02d-%02d %02d:%02d:%02d.%05ld][%lld.%05ld][%lld.%05ld]",
 			hlos_rtc_t.tm_mon + 1, hlos_rtc_t.tm_mday,
 			hlos_rtc_t.tm_hour, hlos_rtc_t.tm_min,
 			hlos_rtc_t.tm_sec, hlos_realtime_ts.tv_nsec / NS_TO_10_US_BASE,
@@ -862,6 +932,22 @@ static int _generate_realtime_timestamp(const char *buf, uint32_t begin, uint32_
 	return size;
 }
 
+/*
+ * Parse log data, enhance it with additional time information and copy it into disp buffer.
+ *
+ * Original log format : [ticks]log data\r\n
+ * New log format with real-time : [ticks][hlos real-time][hlos uptime][tz uptime]log data\r\n
+ *
+ * Input  : log : the initial log data information including log data and end index of log buffer
+ *          log_start : information prepared for log reading including begin index
+ *          round : the length of ring buffer
+ *          max_len : the maxinum length of disp buffer that is used to store log data
+ *          index : the start index of disp
+ *
+ * Output : disp : the log buffer with real-time information
+ *
+ * Return : the length of the written log buffer
+ */
 static uint32_t _copy_to_dispbuf_with_realtime(struct tzdbg_log_t *log,
 	struct tzdbg_log_pos_t *log_start, uint32_t round, uint32_t max_len, uint8_t *disp,
 	uint32_t index)
@@ -879,8 +965,10 @@ static uint32_t _copy_to_dispbuf_with_realtime(struct tzdbg_log_t *log,
 	if (round == 0)
 		return 0;
 
+	pr_debug("tzdbg_log begin = %u, end = %u, round = %u, disp_buf max_len = %u, index = %u\n",
+		begin, end, round, max_len, index);
+
 	while ((begin != end) && (len < max_len)) {
-		remain = max_len - len;
 		/*
 		 * There will be three main type of log buffer.
 		 * 1. Nomal log ends with \r\n. It will add the realtime information.
@@ -890,10 +978,15 @@ static uint32_t _copy_to_dispbuf_with_realtime(struct tzdbg_log_t *log,
 		each_log_len = _find_end_label(log->log_buf, begin, end, remain, round);
 		if (each_log_len == -EINVAL) {
 			if (len == 0) {
-				// To copy the buffer, considering that the initial buffer passed
-				// from user space is insufficient for the entire log line
+				/*
+				 * "0" indicates that it is the first time real-time information is
+				 * being added. Due to an error caused by insufficient buffer space
+				 * passed from user space, there is not enough buffer space to add
+				 * any real-time information. Consequently, tz_log can only copy the
+				 * initial buffer into user space.
+				 */
 				len += _copy_to_dispbuf(log, log_start, round, remain, disp, index);
-				pr_warn("Read an incomplete log.\n");
+				pr_warn("Read an incomplete log and copy to disp. len = %u\n", len);
 			}
 			break;
 		}
@@ -906,13 +999,16 @@ static uint32_t _copy_to_dispbuf_with_realtime(struct tzdbg_log_t *log,
 				timestamp, sizeof(timestamp), &next);
 		if (stamp_len != -EINVAL) {
 			if (stamp_len <= (remain - each_log_len)) {
+				/* copy the ticks and timestamp into disp buffer. */
 				index += _copy_to_dispbuf(log, log_start, round, next, disp, index);
 				copy_len -= next;
 				len += next;
 				memcpy(disp + index, timestamp, stamp_len);
 				index += (uint32_t)stamp_len;
 				len += (uint32_t)stamp_len;
-			} else if (len != 0) {
+			} else {
+				pr_debug("Insufficient buffer for the log with real-time!Remain size is %u, expected size is %u\n",
+					remain, each_log_len + stamp_len);
 				/*
 				 * There are two main reasons for the insufficient buffer. One is
 				 * that there is already some log data in it when the length is not
@@ -921,14 +1017,22 @@ static uint32_t _copy_to_dispbuf_with_realtime(struct tzdbg_log_t *log,
 				 * the next round of reading from user space. For the latter reason,
 				 * the initial log data will be copied to user space.
 				 */
-				break;
+				if (len != 0)
+					break;
 			}
 		}
 
+		/*
+		 * 1. Update the information about disp, including the starting index, the length
+		 *    that has been copied and remainning length.
+		 * 2. Update the next data reading index of log.
+		 */
 		index += _copy_to_dispbuf(log, log_start, round, copy_len, disp, index);
 		len += copy_len;
-
+		remain = max_len - len;
 		begin = (begin + each_log_len) % round;
+		pr_debug("log len = %d, timestamp len = %d, total copy len = %u, disp buf index = %u, remain = %u, tzdbg_log begin = %u.\n",
+			each_log_len, stamp_len, len, index, remain, begin);
 	}
 
 	return len;
@@ -981,9 +1085,12 @@ static int _disp_log_stats(struct tzdbg_log_t *log,
 			return 0;
 }
 
-		if (buf_idx == TZDBG_LOG)
+		if (buf_idx == TZDBG_LOG) {
+			mutex_lock(&tzdbg_mutex);
 			memcpy_fromio((void *)tzdbg.diag_buf, tzdbg.virt_iobase,
 						debug_rw_buf_size);
+			mutex_unlock(&tzdbg_mutex);
+		}
 
 	}
 
@@ -1032,6 +1139,22 @@ static uint32_t _copy_to_dispbuf_v2(struct tzdbg_log_v2_t *log,
 }
 
 #if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
+/*
+ * Parse log data, enhance it with additional time information and copy it into disp buffer.
+ *
+ * Original log format : [ticks]log data\r\n
+ * New log format with real-time : [ticks][hlos real-time][hlos uptime][tz uptime]log data\r\n
+ *
+ * Input  : log : the initial log data information including log data and end index of log buffer
+ *          log_start : information prepared for log reading including begin index
+ *          round : the length of ring buffer
+ *          max_len : the maxinum length of disp buffer that is used to store log data
+ *          index : the start index of disp
+ *
+ * Output : disp : the log buffer with real-time information
+ *
+ * Return : the length of the written log buffer
+ */
 static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
 	struct tzdbg_log_pos_v2_t *log_start, uint32_t round, uint32_t max_len, uint8_t *disp,
 	uint32_t index)
@@ -1049,8 +1172,10 @@ static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
 	if (round == 0)
 		return 0;
 
+	pr_debug("tzdbg_log begin = %u, end = %u, round = %u, disp_buf max_len = %u, index = %u\n",
+		begin, end, round, max_len, index);
+
 	while ((begin != end) && (len < max_len)) {
-		remain = max_len - len;
 		/*
 		 * There will be three main type of log buffer.
 		 * 1. Nomal log ends with \r\n. It will add the realtime information.
@@ -1060,11 +1185,16 @@ static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
 		each_log_len = _find_end_label(log->log_buf, begin, end, remain, round);
 		if (each_log_len == -EINVAL) {
 			if (len == 0) {
-				// To copy the buffer, considering that the initial buffer passed
-				// from user space is insufficient for the entire log line
+				/*
+				 * "0" indicates that it is the first time real-time information is
+				 * being added. Due to an error caused by insufficient buffer space
+				 * passed from user space, there is not enough buffer space to add
+				 * any real-time information. Consequently, tz_log can only copy the
+				 * initial buffer into user space.
+				 */
 				len += _copy_to_dispbuf_v2(log, log_start, round, remain, disp,
 					index);
-				pr_warn("Read an incomplete log.\n");
+				pr_warn("Read an incomplete log and copy to disp. len = %u\n", len);
 			}
 			break;
 		}
@@ -1077,6 +1207,7 @@ static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
 				timestamp, sizeof(timestamp), &next);
 		if (stamp_len != -EINVAL) {
 			if (stamp_len <= (remain - each_log_len)) {
+				/* copy the ticks and timestamp into disp buffer. */
 				index += _copy_to_dispbuf_v2(log, log_start, round, next, disp,
 					index);
 				copy_len -= next;
@@ -1084,7 +1215,9 @@ static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
 				memcpy(disp + index, timestamp, stamp_len);
 				index += (uint32_t)stamp_len;
 				len += (uint32_t)stamp_len;
-			} else if (len != 0) {
+			} else {
+				pr_debug("Insufficient buffer for the log with real-time!Remain size is %u, expected size is %u\n",
+					remain, each_log_len + stamp_len);
 				/*
 				 * There are two main reasons for the insufficient buffer. One is
 				 * that there is already some log data in it when the length is not
@@ -1093,14 +1226,22 @@ static uint32_t _copy_to_dispbuf_with_realtime_v2(struct tzdbg_log_v2_t *log,
 				 * the next round of reading from user space. For the latter reason,
 				 * the initial log data will be copied to user space.
 				 */
-				break;
+				if (len != 0)
+					break;
 			}
 		}
 
+		/*
+		 * 1. Update the information about disp, including the starting index, the length
+		 *    that has been copied and remainning length.
+		 * 2. Update the next data reading index of log.
+		 */
 		index += _copy_to_dispbuf_v2(log, log_start, round, copy_len, disp, index);
 		len += copy_len;
-
+		remain = max_len - len;
 		begin = (begin + each_log_len) % round;
+		pr_debug("log len = %d, timestamp len = %d, total copy len = %u, disp buf index = %u, remain = %u, tzdbg_log begin = %u.\n",
+			each_log_len, stamp_len, len, index, remain, begin);
 	}
 
 	return len;
@@ -1153,16 +1294,20 @@ static int _disp_log_stats_v2(struct tzdbg_log_v2_t *log,
 			return 0;
 		}
 
-		if (buf_idx == TZDBG_LOG)
+		if (buf_idx == TZDBG_LOG) {
+			mutex_lock(&tzdbg_mutex);
 			memcpy_fromio((void *)tzdbg.diag_buf, tzdbg.virt_iobase,
 						debug_rw_buf_size);
-
+			mutex_unlock(&tzdbg_mutex);
+		}
 	}
 
 	max_len = (count > debug_rw_buf_size) ? debug_rw_buf_size : count;
 
 	pr_debug("diag_buf wrap = %u, offset = %u\n",
 		log->log_pos.wrap, log->log_pos.offset);
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 #if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE) && defined(CONFIG_TZLOG_TIME_CONSOLIDATE)
 	if (g_realtime_consolidation_enable)
 		len = _copy_to_dispbuf_with_realtime_v2(log, log_start, log_len, max_len,
@@ -1177,6 +1322,7 @@ static int _disp_log_stats_v2(struct tzdbg_log_v2_t *log,
 	 * return buffer to caller
 	 */
 	tzdbg.stat[buf_idx].data = tzdbg.disp_buf;
+
 	return len;
 }
 
@@ -1227,8 +1373,10 @@ static int __disp_hyp_log_stats(uint8_t *log,
 		}
 
 		/* TZDBG_HYP_LOG */
+		mutex_lock(&tzdbg_mutex);
 		memcpy_fromio((void *)tzdbg.hyp_diag_buf, tzdbg.hyp_virt_iobase,
 						tzdbg.hyp_debug_rw_buf_size);
+		mutex_unlock(&tzdbg_mutex);
 	}
 
 	max_len = (count > tzdbg.hyp_debug_rw_buf_size) ?
@@ -1237,6 +1385,8 @@ static int __disp_hyp_log_stats(uint8_t *log,
 	/*
 	 *  Read from ring buff while there is data and space in return buff
 	 */
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	while ((log_start->offset != hyp->log_pos.offset) && (len < max_len)) {
 		tzdbg.disp_buf[i++] = log[log_start->offset];
 		log_start->offset = (log_start->offset + 1) % log_len;
@@ -1257,6 +1407,8 @@ static int __disp_rm_log_stats(uint8_t *log_ptr, uint32_t max_len)
 	/*
 	 *  Transfer data from rm dialog buff to display buffer in user space
 	 */
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	while ((i < max_len) && (i < display_buf_size)) {
 		tzdbg.disp_buf[i] = log_ptr[i];
 		i++;
@@ -1303,11 +1455,16 @@ static int _disp_encrpted_log_stats(struct encrypted_log_info *enc_log_info,
 	if ((!tzdbg.is_full_encrypted_tz_logs_supported) &&
 		(tzdbg.is_full_encrypted_tz_logs_enabled))
 		pr_info("TZ not supporting full encrypted log functionality\n");
+
+	pr_debug("enc_log_info: paddr: 0x%llx, size: %zu\n",
+		 (uint64_t)enc_log_info->paddr, enc_log_info->size);
 	ret = qcom_scm_request_encrypted_log(enc_log_info->paddr,
 		enc_log_info->size, log_id, tzdbg.is_full_encrypted_tz_logs_supported,
 		tzdbg.is_full_encrypted_tz_logs_enabled);
-	if (ret)
+	if (ret) {
+		pr_debug("request_encrypted_log scm failed, ret: %d\n", ret);
 		return 0;
+	}
 	encr_log_head = (struct tzbsp_encr_log_t *)(enc_log_info->vaddr);
 	pr_debug("display_buf_size = %d, encr_log_buff_size = %d\n",
 		display_buf_size, encr_log_head->encr_log_buff_size);
@@ -1356,15 +1513,33 @@ static int _disp_encrpted_log_stats(struct encrypted_log_info *enc_log_info,
 
 	len += print_text("\nLog : ", encr_log_head->log_buf, size,
 				tzdbg.disp_buf + len, display_buf_size - len);
+
 	memset(enc_log_info->vaddr, 0, enc_log_info->size);
 	tzdbg.stat[type].data = tzdbg.disp_buf;
 	return len;
 }
 
-static int _disp_tz_log_stats(size_t count)
+static int check_tz_qsee_log_state(struct tzdbg_log_t *log, struct tzdbg_log_pos_t *log_start,
+		struct tzdbg_log_v2_t *log_v2, struct tzdbg_log_pos_v2_t *log_start_v2)
 {
-	static struct tzdbg_log_pos_v2_t log_start_v2 = {0};
-	static struct tzdbg_log_pos_t log_start = {0};
+	int ret = 0;
+
+	if (!tzdbg.is_enlarged_buf) {
+		if (!(log_start->offset == log->log_pos.offset &&
+			log_start->wrap == log->log_pos.wrap))
+			ret = 1;
+	} else {
+		if (!(log_start_v2->offset == log_v2->log_pos.offset &&
+			log_start_v2->wrap == log_v2->log_pos.wrap))
+			ret = 1;
+	}
+
+	return ret;
+}
+
+static int _disp_tz_log_stats(struct clients_info_t *clients_info,
+		size_t count, bool check_log_state)
+{
 	struct tzdbg_log_v2_t *log_v2_ptr;
 	struct tzdbg_log_t *log_ptr;
 
@@ -1376,11 +1551,23 @@ static int _disp_tz_log_stats(size_t count)
 			tzdbg.diag_buf->ring_off -
 			offsetof(struct tzdbg_log_v2_t, log_buf));
 
+	pr_debug("log_start: [wrap,offset]:[0x%x, 0x%x], log_start_v2: [wrap,offset]: [0x%x, 0x%x]\n",
+		clients_info->log_start.wrap, clients_info->log_start.offset,
+		clients_info->log_start_v2.wrap, clients_info->log_start_v2.offset);
+
+	pr_debug("log_ptr: [wrap,offset]:[0x%x, 0x%x], log_v2_ptr: [wrap,offset]:[0x%x, 0x%x]\n",
+		log_ptr->log_pos.wrap, log_ptr->log_pos.offset,
+		log_v2_ptr->log_pos.wrap, log_v2_ptr->log_pos.offset);
+
+	if (check_log_state)
+		return check_tz_qsee_log_state(log_ptr, &clients_info->log_start,
+				log_v2_ptr, &clients_info->log_start_v2);
+
 	if (!tzdbg.is_enlarged_buf)
-		return _disp_log_stats(log_ptr, &log_start,
+		return _disp_log_stats(log_ptr, &clients_info->log_start,
 				tzdbg.diag_buf->ring_len, count, TZDBG_LOG);
 
-	return _disp_log_stats_v2(log_v2_ptr, &log_start_v2,
+	return _disp_log_stats_v2(log_v2_ptr, &clients_info->log_start_v2,
 			tzdbg.diag_buf->ring_len, count, TZDBG_LOG);
 }
 
@@ -1415,9 +1602,11 @@ static int _disp_rm_log_stats(size_t count)
 	/* Initialize the tracking data structure */
 	if (tzdbg.rmlog_rw_buf_size != 0) {
 		if (!wrap_around) {
+			mutex_lock(&tzdbg_mutex);
 			memcpy_fromio((void *)tzdbg.rm_diag_buf,
 					tzdbg.rmlog_virt_iobase,
 					tzdbg.rmlog_rw_buf_size);
+			mutex_unlock(&tzdbg_mutex);
 			/* get RM header info first */
 			p_log_hdr = (struct rmdbg_log_hdr_t *)tzdbg.rm_diag_buf;
 			/* Update RM log buffer index tracker and its size */
@@ -1456,21 +1645,30 @@ static int _disp_rm_log_stats(size_t count)
 	return __disp_rm_log_stats(log_ptr, log_len);
 }
 
-static int _disp_qsee_log_stats(size_t count)
+static int _disp_qsee_log_stats(struct clients_info_t *clients_info,
+		size_t count, bool check_log_state)
 {
-	static struct tzdbg_log_pos_t log_start = {0};
-	static struct tzdbg_log_pos_v2_t log_start_v2 = {0};
-
 	if (!tzdbg.tz_qsee_plain_log_enabled)
 		return 0;
 
-	pr_debug("Display unencrypted qsee logs!\n");
+	pr_debug("log_start: [wrap,offset]:[0x%x, 0x%x], log_start_v2: [wrap,offset]: [0x%x, 0x%x]\n",
+		clients_info->log_start.wrap, clients_info->log_start.offset,
+		clients_info->log_start_v2.wrap, clients_info->log_start_v2.offset);
+
+	pr_debug("g_qsee_log: [wrap,offset]:[0x%x, 0x%x], g_qsee_log_v2: [wrap,offset]:[0x%x, 0x%x]\n",
+		g_qsee_log->log_pos.wrap, g_qsee_log->log_pos.offset,
+		g_qsee_log_v2->log_pos.wrap, g_qsee_log_v2->log_pos.offset);
+
+	if (check_log_state)
+		return check_tz_qsee_log_state(g_qsee_log, &clients_info->log_start,
+			g_qsee_log_v2, &clients_info->log_start_v2);
+
 	if (!tzdbg.is_enlarged_buf)
-		return _disp_log_stats(g_qsee_log, &log_start,
+		return _disp_log_stats(g_qsee_log, &clients_info->log_start,
 			QSEE_LOG_BUF_SIZE - sizeof(struct tzdbg_log_pos_t),
 			count, TZDBG_QSEE_LOG);
 
-	return _disp_log_stats_v2(g_qsee_log_v2, &log_start_v2,
+	return _disp_log_stats_v2(g_qsee_log_v2, &clients_info->log_start_v2,
 		QSEE_LOG_BUF_SIZE_V2 - sizeof(struct tzdbg_log_pos_v2_t),
 		count, TZDBG_QSEE_LOG);
 }
@@ -1481,6 +1679,8 @@ static int _disp_hyp_general_stats(size_t count)
 	int i;
 	struct hypdbg_boot_info_t *ptr = NULL;
 
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	len += scnprintf((unsigned char *)tzdbg.disp_buf + len,
 			tzdbg.hyp_debug_rw_buf_size - 1,
 			"   Magic Number    : 0x%x\n"
@@ -1530,7 +1730,7 @@ static int _disp_tme_log_stats(size_t count)
 	/* Copy TME log data to tzdbg diag buffer for the first time */
 	if (!wrap_around) {
 		if (tmelog_process_request(tmecrashdump_address_offset,
-								   TME_LOG_BUF_SIZE, &buf_size)) {
+					   TME_LOG_BUF_SIZE, &buf_size)) {
 			pr_err("Read tme log failed, ret=%d, buf_size: %#x\n", ret, buf_size);
 			return 0;
 		}
@@ -1554,6 +1754,8 @@ static int _disp_tme_log_stats(size_t count)
 		wrap_around =  true;
 
 	/* Copy TME log data to display buffer */
+	mutex_lock(&tzdbg_mutex);
+	atomic_set(&is_rd_locked, 1);
 	memcpy_fromio(tzdbg.disp_buf, log_ptr, log_len);
 
 	tzdbg.stat[TZDBG_TME_LOG].data = tzdbg.disp_buf;
@@ -1566,10 +1768,11 @@ static int _disp_tme_log_stats(size_t count)
 }
 #endif
 
-static ssize_t tzdbg_fs_read_unencrypted(int tz_id, char __user *buf,
-	size_t count, loff_t *offp)
+static ssize_t tzdbg_fs_read_unencrypted(struct clients_info_t *clients_info, int tz_id,
+	char __user *buf, size_t count, loff_t *offp)
 {
 	int len = 0;
+	size_t len_out = 0;
 
 	if (tz_id == TZDBG_BOOT || tz_id == TZDBG_RESET ||
 		tz_id == TZDBG_INTERRUPT || tz_id == TZDBG_GENERAL ||
@@ -1578,14 +1781,18 @@ static ssize_t tzdbg_fs_read_unencrypted(int tz_id, char __user *buf,
 			return 0;
 
 		pr_debug("TZ diag region is directly accessible, copy data now.\n");
+		mutex_lock(&tzdbg_mutex);
 		memcpy_fromio((void *)tzdbg.diag_buf, tzdbg.virt_iobase, debug_rw_buf_size);
+		mutex_unlock(&tzdbg_mutex);
 	}
 
-	if (tz_id == TZDBG_HYP_GENERAL || tz_id == TZDBG_HYP_LOG)
+	if (tz_id == TZDBG_HYP_GENERAL || tz_id == TZDBG_HYP_LOG) {
+		mutex_lock(&tzdbg_mutex);
 		memcpy_fromio((void *)tzdbg.hyp_diag_buf,
 				tzdbg.hyp_virt_iobase,
 				tzdbg.hyp_debug_rw_buf_size);
-
+		mutex_unlock(&tzdbg_mutex);
+	}
 	switch (tz_id) {
 	case TZDBG_BOOT:
 		len = _disp_tz_boot_stats();
@@ -1605,14 +1812,14 @@ static ssize_t tzdbg_fs_read_unencrypted(int tz_id, char __user *buf,
 	case TZDBG_LOG:
 		if (TZBSP_DIAG_MAJOR_VERSION_LEGACY <
 				(tzdbg.diag_buf->version >> 16)) {
-			len = _disp_tz_log_stats(count);
+			len = _disp_tz_log_stats(clients_info, count, false);
 			*offp = 0;
 		} else {
 			len = _disp_tz_log_stats_legacy();
 		}
 		break;
 	case TZDBG_QSEE_LOG:
-		len = _disp_qsee_log_stats(count);
+		len = _disp_qsee_log_stats(clients_info, count, false);
 		*offp = 0;
 		break;
 	case TZDBG_HYP_GENERAL:
@@ -1637,15 +1844,79 @@ static ssize_t tzdbg_fs_read_unencrypted(int tz_id, char __user *buf,
 	if (len > count)
 		len = count;
 
-	return simple_read_from_buffer(buf, len, offp,
+	len_out = simple_read_from_buffer(buf, len, offp,
 				tzdbg.stat[tz_id].data, len);
+
+	if (atomic_read(&is_rd_locked)) {
+		atomic_set(&is_rd_locked, 0);
+		mutex_unlock(&tzdbg_mutex);
+	}
+
+	return len_out;
 }
 
-static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
-	size_t count, loff_t *offp)
+static int is_log_ready(int tz_id, struct clients_info_t *clients_info)
+{
+	int ret = 0;
+	struct tzbsp_encr_log_t *encr_log_head = NULL;
+	struct encrypted_log_info *enc_log_info = NULL;
+	uint32_t size = 0;
+	uint32_t log_id = 0;
+
+	if (tzdbg.is_encrypted_log_enabled) {
+		if ((!tzdbg.is_full_encrypted_tz_logs_supported)
+				&& (tzdbg.is_full_encrypted_tz_logs_enabled))
+			pr_info("TZ not supporting full encrypted log functionality\n");
+		if (tz_id == TZDBG_LOG) {
+			enc_log_info = &enc_tzlog_info;
+			log_id = ENCRYPTED_TZ_LOG_ID;
+		} else { // Can be qsee log only
+			enc_log_info = &enc_qseelog_info;
+			log_id = ENCRYPTED_QSEE_LOG_ID;
+		}
+		pr_debug("enc_log_info: paddr: 0x%llx, size: %zu\n",
+			 (uint64_t)enc_log_info->paddr, enc_log_info->size);
+		ret = qcom_scm_request_encrypted_log(enc_log_info->paddr,
+			enc_log_info->size, log_id, tzdbg.is_full_encrypted_tz_logs_supported,
+			tzdbg.is_full_encrypted_tz_logs_enabled);
+		if (ret) {
+			pr_debug("request_encrypted_log scm failed, ret: %d\n", ret);
+			return 0;
+		}
+		encr_log_head = (struct tzbsp_encr_log_t *)(enc_log_info->vaddr);
+		size = encr_log_head->encr_log_buff_size;
+
+		/*
+		 * 2nd time scm call always fail due to current QTEE behavior.
+		 * Make another call here so that read system call from userspace get correct logs.
+		 * Do nothing for this scm failure.
+		 *
+		 * This scm might require removal or updation as per QTEE behavior later.
+		 */
+		ret = qcom_scm_request_encrypted_log(enc_log_info->paddr,
+			enc_log_info->size, log_id, tzdbg.is_full_encrypted_tz_logs_supported,
+			tzdbg.is_full_encrypted_tz_logs_enabled);
+		if (ret)
+			pr_debug("2nd request_encrypted_log scm expected to fail, ret: %d\n", ret);
+		ret = size;
+	} else {
+		if (tz_id == TZDBG_LOG) {
+			// update tz_log buffer
+			memcpy_fromio((void *)tzdbg.diag_buf, tzdbg.virt_iobase, debug_rw_buf_size);
+			ret = _disp_tz_log_stats(clients_info, 0, true);
+		} else {
+			ret = _disp_qsee_log_stats(clients_info, 0, true);
+		}
+	}
+
+	pr_debug("log_id: %d, ret: %d\n", log_id, ret);
+	return ret;
+}
+
+static ssize_t tzdbg_fs_read_encrypted(struct clients_info_t *clients_info,
+	int tz_id, char __user *buf, size_t count, loff_t *offp)
 {
 	int len = 0, ret = 0;
-	struct tzdbg_stat *stat = &(tzdbg.stat[tz_id]);
 
 	pr_debug("%s: tz_id = %d\n", __func__, tz_id);
 
@@ -1654,30 +1925,34 @@ static ssize_t tzdbg_fs_read_encrypted(int tz_id, char __user *buf,
 		return ret;
 	}
 
-	if (!stat->display_len) {
+	mutex_lock(&tzdbg_mutex);
+	if (!clients_info->display_len) {
+
 		if (tz_id == TZDBG_QSEE_LOG)
-			stat->display_len = _disp_encrpted_log_stats(
+			clients_info->display_len = _disp_encrpted_log_stats(
 					&enc_qseelog_info,
 					tz_id, ENCRYPTED_QSEE_LOG_ID);
 		else
-			stat->display_len = _disp_encrpted_log_stats(
+			clients_info->display_len = _disp_encrpted_log_stats(
 					&enc_tzlog_info,
 					tz_id, ENCRYPTED_TZ_LOG_ID);
-		stat->display_offset = 0;
+		clients_info->display_offset = 0;
 	}
-	len = stat->display_len;
+	len = clients_info->display_len;
 	if (len > count)
 		len = count;
 
 	*offp = 0;
 	ret = simple_read_from_buffer(buf, len, offp,
-				tzdbg.stat[tz_id].data + stat->display_offset,
+				tzdbg.stat[tz_id].data + clients_info->display_offset,
 				count);
-	stat->display_offset += ret;
-	stat->display_len -= ret;
+	clients_info->display_offset += ret;
+	clients_info->display_len -= ret;
+	mutex_unlock(&tzdbg_mutex);
+
 	pr_debug("ret = %d, offset = %d\n", ret, (int)(*offp));
 	pr_debug("display_len = %lu, offset = %lu\n",
-			stat->display_len, stat->display_offset);
+			clients_info->display_len, clients_info->display_offset);
 	return ret;
 }
 
@@ -1686,6 +1961,15 @@ static ssize_t tzdbg_fs_read(struct file *file, char __user *buf,
 {
 	struct seq_file *seq = file->private_data;
 	int tz_id = TZDBG_STATS_MAX;
+	ssize_t len = 0;
+	struct clients_info_t *clients_info = NULL;
+
+	list_for_each_entry(clients_info, &clients_list, list) {
+		if (clients_info->file == file)
+			break;
+	}
+	if (!clients_info)
+		return -ENODATA;
 
 	if (seq)
 		tz_id = *(int *)(seq->private);
@@ -1697,24 +1981,48 @@ static ssize_t tzdbg_fs_read(struct file *file, char __user *buf,
 	if (!tzdbg.is_encrypted_log_enabled ||
 	    (tz_id == TZDBG_HYP_GENERAL || tz_id == TZDBG_HYP_LOG)
 	    || tz_id == TZDBG_RM_LOG || tz_id == TZDBG_TME_LOG)
-		return tzdbg_fs_read_unencrypted(tz_id, buf, count, offp);
+		len = tzdbg_fs_read_unencrypted(clients_info, tz_id, buf, count, offp);
 	else
-		return tzdbg_fs_read_encrypted(tz_id, buf, count, offp);
+		len = tzdbg_fs_read_encrypted(clients_info, tz_id, buf, count, offp);
+
+	return len;
 }
 
 static int tzdbg_procfs_open(struct inode *inode, struct file *file)
 {
+	struct clients_info_t *clients_info = NULL;
+
+	clients_info = kzalloc(sizeof(*clients_info), GFP_KERNEL);
+	if (!clients_info)
+		return -ENOMEM;
+
+	clients_info->file = file;
+	mutex_lock(&tzdbg_mutex);
+	list_add(&clients_info->list, &clients_list);
+	mutex_unlock(&tzdbg_mutex);
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION(6,0,0))
-       return single_open(file, NULL, PDE_DATA(inode));
+	return single_open(file, NULL, PDE_DATA(inode));
 #else
-       return single_open(file, NULL, pde_data(inode));
+	return single_open(file, NULL, pde_data(inode));
 #endif
-
 }
 
 static int tzdbg_procfs_release(struct inode *inode, struct file *file)
 {
+	struct clients_info_t *clients_info = NULL;
+
+	list_for_each_entry(clients_info, &clients_list, list) {
+		if (clients_info->file == file)
+			break;
+	}
+	if (clients_info) {
+		mutex_lock(&tzdbg_mutex);
+		list_del(&clients_info->list);
+		mutex_unlock(&tzdbg_mutex);
+		kfree(clients_info);
+	}
+
 	return single_release(inode, file);
 }
 
@@ -1724,6 +2032,35 @@ static loff_t tzdbg_procfs_lseek(struct file *file, loff_t offset, int whence)
 	return -EOPNOTSUPP;
 }
 
+static __poll_t tzdbg_procfs_poll(struct file *file, struct poll_table_struct *wait)
+{
+	struct seq_file *seq = file->private_data;
+	int tz_id = *(int *)(seq->private);
+	struct clients_info_t *clients_info = NULL;
+
+	/*
+	 * Bail out early if below conditions are met
+	 * 1. Polling available for tz/qsee logs only
+	 * 2. If encryption and plain text logs both are not enabled.
+	 *
+	 * Return POLLERR so that userspace doesn't poll again in this case.
+	 */
+	if (!((tz_id == TZDBG_LOG || tz_id == TZDBG_QSEE_LOG) &&
+		(tzdbg.is_encrypted_log_enabled || tzdbg.tz_qsee_plain_log_enabled)))
+		return POLLERR;
+
+	list_for_each_entry(clients_info, &clients_list, list) {
+		if (clients_info->file == file)
+			break;
+	}
+	if (is_log_ready(tz_id, clients_info)) {
+		pr_debug("Setting polling flag true, tzid: %d!\n", tz_id);
+		return EPOLLIN | EPOLLRDNORM;
+	}
+
+	return 0;
+}
+
 struct proc_ops tzdbg_fops = {
 	.proc_flags   = PROC_ENTRY_PERMANENT,
 	.proc_read    = tzdbg_fs_read,
@@ -1731,6 +2068,7 @@ struct proc_ops tzdbg_fops = {
 	.proc_release = tzdbg_procfs_release,
 /* mandatory unless nonseekable_open() or equivalent is used */
 	.proc_lseek   = tzdbg_procfs_lseek,
+	.proc_poll    = tzdbg_procfs_poll,
 };
 
 static int tzdbg_init_tme_log(struct platform_device *pdev, void __iomem *virt_iobase)

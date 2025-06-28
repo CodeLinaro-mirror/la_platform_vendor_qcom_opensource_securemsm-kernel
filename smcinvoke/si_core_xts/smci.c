@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2024-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #define pr_fmt(fmt) "smcinvoke: %s: " fmt, __func__
@@ -903,7 +903,7 @@ static void dequeue_and_put_txn(struct cb_txn *cb_txn)
 static int wait_for_pending_txn(struct server_info *si, struct cb_txn **cb_txn)
 {
 	int ret = 0;
-	struct cb_txn *t;
+	struct cb_txn *t = NULL;
 
 	DEFINE_WAIT_FUNC(wait, woken_wake_function);
 
@@ -1070,7 +1070,7 @@ static int cbo_dispatch(unsigned int context_id,
 	 * failed, then transaction has already been PROCESSED.
 	 */
 
-	errno = set_txn_state(cb_txn, XST_TIMEDOUT) ? cb_txn->errno : -EINVAL;
+	errno = set_txn_state(cb_txn, XST_TIMEDOUT) ? cb_txn->errno : -ERESTARTSYS;
 	pr_debug("%s invocation returned with %d (context_id %u).\n",
 		si_object_name(object), errno, context_id);
 	if (!errno)
@@ -1810,5 +1810,11 @@ module_platform_driver(smcinvoke_plat_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("smcinvoke driver");
+#if (KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE)
+MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
+MODULE_IMPORT_NS("DMA_BUF");
+#else
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_IMPORT_NS(DMA_BUF);
+#endif
+

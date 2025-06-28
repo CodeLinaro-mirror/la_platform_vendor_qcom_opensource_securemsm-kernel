@@ -1,8 +1,8 @@
 load(":securemsm_kernel.bzl", "define_consolidate_gki_modules")
 
-def define_pineapple():
+def define_qcs610():
     define_consolidate_gki_modules(
-        target = "pineapple",
+        target = "qcs610",
         modules = [
             "smcinvoke_dlkm",
             "tz_log_dlkm",
@@ -11,17 +11,10 @@ def define_pineapple():
             "qcedev-mod_dlkm",
             "qrng_dlkm",
             "qcrypto-msm_dlkm",
-            "smmu_proxy_dlkm",
-            "qseecom_dlkm",
-            "tmecom-intf_dlkm",
-            "seccam_test_driver",
-            "hdcp2p2_test",
-            "si_core_test",
-            "tornado_mod",
+            "qseecom_dlkm"
         ],
         extra_options = [
+            "CONFIG_QSEECOM",
             "CONFIG_QCOM_SMCINVOKE",
-            "CONFIG_QSEECOM_COMPAT",
-            "CONFIG_QCOM_SI_CORE_TEST",
         ],
     )
