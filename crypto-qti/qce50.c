@@ -1860,7 +1860,7 @@ int qce_manage_timeout(void *handle, int req_info)
 		unsigned long wait = 0;
 
 		reinit_completion(&pce_dev->recovery_req.complete);
-		pr_info("Running recovery request to clear SID.\n");
+		pr_debug("Running recovery request to clear SID.\n");
 		if (qce_ablk_cipher_req(pce_dev, &pce_dev->recovery_req.creq))
 			pr_err("Could not initiate a cipher request.\n");
 		else
@@ -4711,20 +4711,6 @@ static void qce_recovery_complete(void *cookie, unsigned char *digest,
 	complete(&areq->pce_dev->recovery_req.complete);
 }
 
-/* QCE_RECOVERY_ERROR_REQ */
-static void qce_recovery_err_complete(void *cookie, struct qce_error *qce_err)
-{
-	struct skcipher_with_handle *areq = cookie;
-
-	if (!areq || !areq->pce_dev) {
-		pr_err("invalid handle\n");
-		return;
-	}
-
-	pr_err("recovery request errored out, setting complete");
-	complete(&areq->pce_dev->recovery_req.complete);
-}
-
 static int select_mode(struct qce_device *pce_dev,
 		struct ce_request_info *preq_info)
 {
@@ -6336,7 +6322,7 @@ static int setup_recovery_req(struct qce_device *pce_dev)
 	rreq->creq.cryptlen = len;
 	rreq->creq.key_index = QCE_RECOVERY_REQ_KEY_INDEX;
 	rreq->creq.qce_cb = qce_recovery_complete;
-	rreq->creq.qce_err_cb = qce_recovery_err_complete;
+	rreq->creq.qce_err_cb = NULL;
 
 	rreq->creq.is_pattern_valid = false;
 	rreq->creq.block_offset = 0;
