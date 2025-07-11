@@ -2843,8 +2843,11 @@ exit_mem_new_client:
 	podev->mem_client = NULL;
 
 exit_qce_close:
-	if (handle)
+	if (handle) {
 		qce_close(handle);
+		handle = NULL;
+		podev->qce = NULL;
+	}
 exit_scale_busbandwidth:
 	icc_set_bw(podev->icc_path, 0, 0);
 exit_unregister_bus_scale:
@@ -2862,7 +2865,6 @@ exit_unreg_chrdev_region:
 	podev->icc_path = NULL;
 	platform_set_drvdata(pdev, NULL);
 	podev->pdev = NULL;
-	podev->qce = NULL;
 
 	return rc;
 }
