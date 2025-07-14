@@ -3,7 +3,7 @@
  * QTI CE device driver.
  *
  * Copyright (c) 2010-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/mman.h>
@@ -563,6 +563,8 @@ void qcedev_offload_cipher_req_err_cb(void *cookie, struct qce_error *qce_err)
 	if (!podev)
 		return;
 	qcedev_areq = podev->active_command;
+	if (!qcedev_areq)
+		return;
 
 	qcedev_areq_set_qce_error(qcedev_areq, qce_err);
 	qcedev_areq->failed = true;
