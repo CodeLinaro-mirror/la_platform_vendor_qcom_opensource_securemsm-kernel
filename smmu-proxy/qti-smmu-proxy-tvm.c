@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
-
 #include <linux/kthread.h>
-
+#include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/qcom-iommu-util.h>
 #include <dt-bindings/arm/msm/qti-smmu-proxy-dt-ids.h>
 #include "qti-smmu-proxy-common.h"
@@ -40,15 +40,21 @@ struct cb_dev {
 
 struct task_struct *receiver_msgq_handler_thread;
 
+static const char smmu_ws_name[] = "smmu_virt_ws";
+static struct wakeup_source *smmu_ws;
+
 static int zero_dma_buf(struct dma_buf *dmabuf)
 {
-	int ret;
+	int ret = -EINVAL;
 	struct iosys_map vmap_struct = {0};
+
+	if (smmu_ws)
+		__pm_stay_awake(smmu_ws);
 
 	ret = dma_buf_vmap(dmabuf, &vmap_struct);
 	if (ret) {
 		pr_err("%s: dma_buf_vmap() failed with %d\n", __func__, ret);
-		return ret;
+		goto out;
 	}
 
 	/* Use DMA_TO_DEVICE since we are not reading anything */
@@ -60,13 +66,22 @@ static int zero_dma_buf(struct dma_buf *dmabuf)
 
 	memset(vmap_struct.vaddr, 0, dmabuf->size);
 	ret = dma_buf_end_cpu_access(dmabuf, DMA_TO_DEVICE);
-	if (ret)
+	if (ret) {
 		pr_err("%s: dma_buf_end_cpu_access() failed with %d\n", __func__, ret);
+		goto unmap;
+	}
+
+	/* Success path */
+	ret = 0;
+
 unmap:
 	dma_buf_vunmap(dmabuf, &vmap_struct);
 
+out:
 	if (ret)
 		pr_err("%s: Failed to properly zero the DMA-BUF\n", __func__);
+	if (smmu_ws)
+		__pm_relax(smmu_ws);
 
 	return ret;
 }
@@ -96,7 +111,7 @@ static int iommu_unmap_and_relinquish(u32 hdl)
 						 buf_state->cb_info[cb_id].sg_table,
 						 DMA_BIDIRECTIONAL);
 			dma_buf_detach(buf_state->dmabuf,
-				       buf_state->cb_info[cb_id].attachment);
+						buf_state->cb_info[cb_id].attachment);
 			buf_state->cb_info[cb_id].mapped = false;
 
 			/* If nothing left is mapped for this CB, unprogram its SMR */
@@ -105,7 +120,7 @@ static int iommu_unmap_and_relinquish(u32 hdl)
 				ret = qcom_iommu_sid_switch(cb_devices[cb_id].dev, SID_RELEASE);
 				if (ret) {
 					pr_err("%s: Failed to unprogram SMR for cb_id %d rc: %d\n",
-					       __func__, cb_id, ret);
+							__func__, cb_id, ret);
 					break;
 				}
 				cb_devices[cb_id].acquired = false;
@@ -143,7 +158,6 @@ static int process_unmap_request(struct smmu_proxy_unmap_req *req, size_t size)
 	resp->hdr.msg_type = SMMU_PROXY_UNMAP_RESP;
 	resp->hdr.msg_size = sizeof(*resp);
 	resp->hdr.ret = ret;
-
 	ret = gh_msgq_send(msgq_hdl, resp, resp->hdr.msg_size, 0);
 	if (ret < 0)
 		pr_err("%s: failed to send response to mapping request rc: %d\n", __func__, ret);
@@ -164,17 +178,14 @@ static int process_switch_sid_request(struct smmu_proxy_switch_sid_req *req, siz
 	if (!resp)
 		return -ENOMEM;
 
-
 	if (req->cb_id >= QTI_SMMU_PROXY_CB_IDS_LEN) {
 		ret = -ERANGE;
 		goto exit_resp;
 	}
-
 	/*
 	 * For now, we only expect sid switch for the Display CB,
 	 * but we are not disabling other CBs in case it is needed.
 	 */
-
 	mutex_lock(&buffer_state_lock);
 	if (req->switch_dir == SID_ACQUIRE && cb_devices[req->cb_id].acquired)
 		pr_info("cb_id: %d has already been acquired. Ignoring request.\n", req->cb_id);
@@ -239,7 +250,7 @@ struct sg_table *retrieve_and_iommu_map(struct mem_buf_retrieve_kernel_arg *retr
 		}
 		if (buf_state->locked) {
 			pr_err("%s: handle 0x%x is locked!\n", __func__,
-			       retrieve_arg->memparcel_hdl);
+				retrieve_arg->memparcel_hdl);
 			ret = -EINVAL;
 			goto unlock_err;
 		}
@@ -263,7 +274,7 @@ struct sg_table *retrieve_and_iommu_map(struct mem_buf_retrieve_kernel_arg *retr
 		buf_state = kzalloc(sizeof(*buf_state), GFP_KERNEL);
 		if (!buf_state) {
 			pr_err("%s: Unable to allocate memory for buf_state\n",
-			       __func__);
+				__func__);
 			ret = -ENOMEM;
 			goto free_buf;
 		}
@@ -299,7 +310,7 @@ struct sg_table *retrieve_and_iommu_map(struct mem_buf_retrieve_kernel_arg *retr
 		ret = qcom_iommu_sid_switch(cb_devices[cb_id].dev, SID_ACQUIRE);
 		if (ret) {
 			pr_err("%s: Failed to program SMRs for cb_id %d rc: %d\n", __func__,
-			       cb_id, ret);
+				cb_id, ret);
 			goto unmap;
 		}
 		cb_devices[cb_id].acquired = true;
@@ -307,10 +318,10 @@ struct sg_table *retrieve_and_iommu_map(struct mem_buf_retrieve_kernel_arg *retr
 	cb_map_counts[cb_id]++;
 
 	ret = xa_err(xa_store(&buffer_state_arr, retrieve_arg->memparcel_hdl, buf_state,
-		     GFP_KERNEL));
+			GFP_KERNEL));
 	if (ret < 0) {
 		pr_err("%s: Failed to store new buffer in xarray rc: %d\n", __func__,
-		       ret);
+			ret);
 		goto dec_cb_map_count;
 	}
 
@@ -325,7 +336,7 @@ dec_cb_map_count:
 		ret = qcom_iommu_sid_switch(cb_devices[cb_id].dev, SID_RELEASE);
 		if (ret)
 			pr_err("%s: Failed to unprogram SMR for cb_id %d rc: %d\n",
-			       __func__, cb_id, ret);
+				__func__, cb_id, ret);
 		else
 			cb_devices[cb_id].acquired = false;
 	}
@@ -351,7 +362,7 @@ static int process_map_request(struct smmu_proxy_map_req *req, size_t size)
 	int ret = 0;
 	u32 n_acl_entries = req->acl_desc.n_acl_entries;
 	size_t map_req_len = offsetof(struct smmu_proxy_map_req,
-				      acl_desc.acl_entries[n_acl_entries]);
+				acl_desc.acl_entries[n_acl_entries]);
 	struct mem_buf_retrieve_kernel_arg retrieve_arg = {0};
 	int i;
 	struct sg_table *table;
@@ -363,7 +374,7 @@ static int process_map_request(struct smmu_proxy_map_req *req, size_t size)
 	 */
 	if (map_req_len > size) {
 		pr_err("%s: Reported size of smmu_proxy_map_request (%ld bytes) greater than message size given by message queue (%ld bytes)\n",
-		       __func__, map_req_len, size);
+			__func__, map_req_len, size);
 		return -EINVAL;
 	}
 
@@ -433,7 +444,7 @@ static void smmu_proxy_process_msg(void *buf, size_t size)
 
 	if (size < sizeof(*msg_hdr) || msg_hdr->msg_size != size) {
 		pr_err("%s: message received is not of a proper size: 0x%lx, 0x:%x\n",
-		       __func__, size, msg_hdr->msg_size);
+				__func__, size, msg_hdr->msg_size);
 		goto handle_err;
 	}
 
@@ -449,7 +460,7 @@ static void smmu_proxy_process_msg(void *buf, size_t size)
 		break;
 	default:
 		pr_err("%s: received message of unknown type: %d\n", __func__,
-		       msg_hdr->msg_type);
+				msg_hdr->msg_type);
 	}
 
 	if (!ret)
@@ -459,7 +470,7 @@ handle_err:
 	resp = kzalloc(sizeof(resp), GFP_KERNEL);
 	if (!resp) {
 		pr_err("%s: Failed to allocate memory for response\n", __func__);
-		return;
+		goto pm_release;
 	}
 
 	resp->msg_type = SMMU_PROXY_ERR_RESP;
@@ -473,18 +484,33 @@ handle_err:
 		pr_debug("%s: response to mapping request sent\n", __func__);
 
 	kfree(resp);
-
+pm_release:
+	if (smmu_ws) {
+		__pm_relax(smmu_ws);
+		wakeup_source_unregister(smmu_ws);
+		smmu_ws = NULL;
+	}
+	return;
 }
 
 static int receiver_msgq_handler(void *msgq_hdl)
 {
 	void *buf;
 	size_t size;
-	int ret;
+	int ret = 0;
+
+	smmu_ws = wakeup_source_register(NULL, smmu_ws_name);
+	if (!smmu_ws) {
+		pr_err("%s: Wakeup src creation fail,system may suspend during op\n", __func__);
+		return -ENOMEM;
+	}
 
 	buf = kzalloc(GH_MSGQ_MAX_MSG_SIZE_BYTES, GFP_KERNEL);
-	if (!buf)
+	if (!buf) {
+		wakeup_source_unregister(smmu_ws);
+		smmu_ws = NULL;
 		return -ENOMEM;
+	}
 
 	while (!kthread_should_stop()) {
 		ret = gh_msgq_recv(msgq_hdl, buf, GH_MSGQ_MAX_MSG_SIZE_BYTES, &size, 0);
@@ -496,6 +522,10 @@ static int receiver_msgq_handler(void *msgq_hdl)
 	}
 
 	kfree(buf);
+	if (smmu_ws) {
+		wakeup_source_unregister(smmu_ws);
+		smmu_ws = NULL;
+	}
 
 	return 0;
 }
