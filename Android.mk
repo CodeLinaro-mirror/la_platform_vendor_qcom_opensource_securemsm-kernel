@@ -89,7 +89,11 @@ endif
 ifneq ($(TARGET_USES_QMAA), true)
     ENABLE_SST_INVOKE_TEST := true
     ENABLE_HDCP_TEST := true
-    ENABLE_SI_CORE_TEST := true
+    ifeq ($(CONFIG_SI_CORE_TEST), y)
+        ENABLE_SI_CORE_TEST := true
+    else
+        ENABLE_SI_CORE_TEST := false
+    endif
     ifneq ($(call is-board-platform-in-list, kalama64 blair kalama),true)
         ENABLE_SECCAM_TEST := true
     endif
