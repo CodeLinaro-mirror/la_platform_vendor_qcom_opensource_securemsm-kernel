@@ -4756,7 +4756,12 @@ static int __qseecom_get_fw_size(const char *appname, uint32_t *fw_size,
 	struct elf64_hdr *ehdr64;
 	int num_images = 0;
 
-	snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname);
+	if (snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname) >= sizeof(fw_name)) {
+		pr_err("appname: %s.mdt is too long, max %d char limit!\n", appname, MAX_APP_NAME_SIZE);
+		ret = -EINVAL;
+		goto err;
+	}
+
 	rc = firmware_request_nowarn(&fw_entry, fw_name,  qseecom.pdev);
 	if (rc) {
 		pr_err("error with firmware_request_nowarn, rc = %d\n", rc);
@@ -4786,7 +4791,11 @@ static int __qseecom_get_fw_size(const char *appname, uint32_t *fw_size,
 	fw_entry = NULL;
 	for (i = 0; i < num_images; i++) {
 		memset(fw_name, 0, sizeof(fw_name));
-		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d", appname, i);
+		if (snprintf(fw_name, sizeof(fw_name), "%s.b%02d", appname, i) >= sizeof(fw_name)) {
+			pr_err("Firmware name too long: %s.b%02d\n", appname, i);
+			ret = -EINVAL;
+			goto err;
+		}
 		ret = firmware_request_nowarn(&fw_entry, fw_name, qseecom.pdev);
 		if (ret)
 			goto err;
@@ -4822,7 +4831,12 @@ static int __qseecom_get_fw_data(const char *appname, u8 *img_data,
 	int num_images = 0;
 	unsigned char app_arch = 0;
 
-	snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname);
+	if (snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname) >= sizeof(fw_name)) {
+		pr_err("appname: %s.mdt is too long, max %d char limit!\n", appname, MAX_APP_NAME_SIZE);
+		ret = -EINVAL;
+		goto err;
+	}
+
 	rc = firmware_request_nowarn(&fw_entry, fw_name,  qseecom.pdev);
 	if (rc) {
 		ret = -EIO;
@@ -4856,7 +4870,11 @@ static int __qseecom_get_fw_data(const char *appname, u8 *img_data,
 	release_firmware(fw_entry);
 	fw_entry = NULL;
 	for (i = 0; i < num_images; i++) {
-		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d", appname, i);
+		if (snprintf(fw_name, sizeof(fw_name), "%s.b%02d", appname, i) >= sizeof(fw_name)) {
+			pr_err("Firmware name too long: %s.b%02d\n", appname, i);
+			ret = -EINVAL;
+			goto err;
+		}
 		ret = firmware_request_nowarn(&fw_entry, fw_name, qseecom.pdev);
 		if (ret) {
 			pr_err("Failed to locate blob %s\n", fw_name);
