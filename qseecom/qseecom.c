@@ -2074,7 +2074,11 @@ static int qseecom_scale_bus_bandwidth_timer(uint32_t mode)
 			pr_err("Failed to decrease clk ref count.\n");
 			goto err_scale_timer;
 		}
+		#if (KERNEL_VERSION(6, 15, 0) > LINUX_VERSION_CODE)
 		del_timer_sync(&(qseecom.bw_scale_down_timer));
+		#else
+		timer_delete_sync(&(qseecom.bw_scale_down_timer));
+		#endif
 		qseecom.timer_running = false;
 	}
 err_scale_timer:
@@ -9459,7 +9463,11 @@ static void qseecom_deinit_bus(void)
 	qseecom_bus_scale_update_request(qseecom.qsee_perf_client, 0);
 	icc_put(qseecom.icc_path);
 	cancel_work_sync(&qseecom.bw_inactive_req_ws);
+	#if (KERNEL_VERSION(6, 15, 0) > LINUX_VERSION_CODE)
 	del_timer_sync(&qseecom.bw_scale_down_timer);
+	#else
+	timer_delete_sync(&qseecom.bw_scale_down_timer);
+	#endif
 }
 
 static int qseecom_send_app_region(struct platform_device *pdev)
@@ -9625,7 +9633,7 @@ static int qseecom_init_dev(struct platform_device *pdev)
 		goto exit_unreg_chrdev_region;
 	}
 	qseecom.dev = &pdev->dev;
-	rc = dma_set_mask(qseecom.dev, DMA_BIT_MASK(64));
+	rc = dma_set_mask(qseecom.dev, (u64) DMA_BIT_MASK(64));
 	if (rc) {
 		pr_err("qseecom failed to set dma mask %d\n", rc);
 		goto exit_del_cdev;
@@ -9638,7 +9646,7 @@ static int qseecom_init_dev(struct platform_device *pdev)
 			goto exit_del_cdev;
 		}
 	}
-	dma_set_max_seg_size(qseecom.dev, DMA_BIT_MASK(32));
+	dma_set_max_seg_size(qseecom.dev, (unsigned int) DMA_BIT_MASK(32));
 	rc = of_reserved_mem_device_init_by_idx(&pdev->dev,
 					(&pdev->dev)->of_node, 0);
 	if (rc) {
@@ -10015,8 +10023,11 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 			else
 				qseecom.current_mode = INACTIVE;
 		}
-
+		#if (KERNEL_VERSION(6, 15, 0) > LINUX_VERSION_CODE)
 		del_timer_sync(&(qseecom.bw_scale_down_timer));
+		#else
+		timer_delete_sync(&(qseecom.bw_scale_down_timer));
+		#endif
 		qseecom.timer_running = false;
 
 		mutex_unlock(&qsee_bw_mutex);
