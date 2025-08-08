@@ -6348,11 +6348,12 @@ static int qce_smmu_init(struct qce_device *pce_dev)
 
 #define TCSR_SOC_HW_VERSION	0x1FC8000
 #define REG_SIZE	4
-#define CANOE_SOC_HW_VER	0xA01B0100
+#define TCSR_SOC_HW_VERSION_MAJOR_MASK	GENMASK(15, 8)
 
 static void qce_parse_soc_revision(struct qce_device *pce_dev)
 {
 	unsigned int soc_hw_version = 0;
+	unsigned int major = 0;
 	void __iomem *hw_version_reg = ioremap(TCSR_SOC_HW_VERSION, REG_SIZE);
 
 	if (!hw_version_reg) {
@@ -6361,15 +6362,9 @@ static void qce_parse_soc_revision(struct qce_device *pce_dev)
 		return;
 	}
 	soc_hw_version = readl(hw_version_reg);
+	major = FIELD_GET(TCSR_SOC_HW_VERSION_MAJOR_MASK, soc_hw_version);
 
-	/*
-	 * The hardware ECO for fixing descriptor FIFO sizes is
-	 * not indicated via crypto registers. For this reason, it is
-	 * required to manually check the full soc revision to differentiate
-	 * canoe v1 vs v2.
-	 */
-
-	if (soc_hw_version == CANOE_SOC_HW_VER)
+	if (major == 1)
 		pce_dev->fifo_eco_unavailable = true;
 	else
 		pce_dev->fifo_eco_unavailable = false;
