@@ -3,7 +3,7 @@
  * QTI Secure Execution Environment Communicator (QSEECOM) driver
  *
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QSEECOM: %s: " fmt, __func__
@@ -397,7 +397,7 @@ struct qseecom_control {
 	wait_queue_head_t register_lsnr_pending_wq;
 	struct task_struct *unregister_lsnr_kthread_task;
 	wait_queue_head_t unregister_lsnr_kthread_wq;
-	atomic_t unregister_lsnr_kthread_state;
+	atomic_t unregister_lsnr_kthread_work_pending;
 
 	struct list_head  unload_app_pending_list_head;
 	struct task_struct *unload_app_kthread_task;
@@ -1697,8 +1697,8 @@ static int qseecom_register_listener(struct qseecom_dev_handle *data,
 				list_empty(
 				&qseecom.unregister_lsnr_pending_list_head));
 			if (ret) {
-				pr_err("interrupted register_pending_wq %d\n",
-						rcvd_lstnr.listener_id);
+				pr_err("interrupted register_pending_wq %d, ret: %d\n",
+						rcvd_lstnr.listener_id, ret);
 				mutex_lock(&listener_access_lock);
 				return -ERESTARTSYS;
 			}
@@ -1860,7 +1860,7 @@ static void __qseecom_processing_pending_lsnr_unregister(void)
 						entry->data->listener.id);
 				/* don't process the entry if qseecom_release is not called*/
 				if (!entry->data->listener.release_called) {
-					pr_err("listener release yet to be called for lstnr :%d\n",
+					pr_debug("listener release yet to be called for lstnr :%d\n",
 						entry->data->listener.id);
 					pos = pos->next;
 					continue;
@@ -1896,24 +1896,25 @@ static void __qseecom_processing_pending_lsnr_unregister(void)
 
 static void __wakeup_unregister_listener_kthread(void)
 {
-	atomic_set(&qseecom.unregister_lsnr_kthread_state,
-				LSNR_UNREG_KT_WAKEUP);
+	atomic_inc(&qseecom.unregister_lsnr_kthread_work_pending);
 	wake_up_interruptible(&qseecom.unregister_lsnr_kthread_wq);
 }
 
 static int __qseecom_unregister_listener_kthread_func(void *data)
 {
 	while (!kthread_should_stop()) {
-		wait_event_interruptible(
-			qseecom.unregister_lsnr_kthread_wq,
-			atomic_read(&qseecom.unregister_lsnr_kthread_state)
-				== LSNR_UNREG_KT_WAKEUP);
-		pr_debug("kthread to unregister listener is called %d\n",
-			atomic_read(&qseecom.unregister_lsnr_kthread_state));
-		__qseecom_processing_pending_lsnr_unregister();
-		atomic_set(&qseecom.unregister_lsnr_kthread_state,
-				LSNR_UNREG_KT_SLEEP);
+		wait_event_interruptible(qseecom.unregister_lsnr_kthread_wq,
+			atomic_read(&qseecom.unregister_lsnr_kthread_work_pending) > 0 ||
+			kthread_should_stop());
+
+		/* Process all pending work */
+		while (atomic_dec_if_positive(&qseecom.unregister_lsnr_kthread_work_pending) >= 0) {
+			pr_debug("kthread to unregister listener is processing work, pending: %d\n",
+				 atomic_read(&qseecom.unregister_lsnr_kthread_work_pending));
+			__qseecom_processing_pending_lsnr_unregister();
+		}
 	}
+
 	pr_warn("kthread to unregister listener stopped\n");
 	return 0;
 }
@@ -3313,6 +3314,15 @@ static int qseecom_prepare_unload_app(struct qseecom_dev_handle *data)
 
 	if (!memcmp(data->client.app_name, "keymaste", strlen("keymaste"))) {
 		pr_debug("Do not add keymaster app from tz to unload list\n");
+		/* release the associated dma-buf */
+		if (data->client.dmabuf) {
+			qseecom_vaddr_unmap(data->client.sb_virt, data->client.sgt,
+				data->client.attach, data->client.dmabuf);
+			MAKE_NULL(data->client.sgt,
+				data->client.attach, data->client.dmabuf);
+		}
+		data->released = true;
+		__qseecom_free_tzbuf(&data->sglistinfo_shm);
 		return 0;
 	}
 
@@ -4702,7 +4712,12 @@ static int __qseecom_get_fw_size(const char *appname, uint32_t *fw_size,
 	struct elf64_hdr *ehdr64;
 	int num_images = 0;
 
-	snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname);
+	if (snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname) >= sizeof(fw_name)) {
+		pr_err("appname: %s.mdt is too long, max %d char limit!\n", appname, MAX_APP_NAME_SIZE);
+		ret = -EINVAL;
+		goto err;
+	}
+
 	rc = firmware_request_nowarn(&fw_entry, fw_name,  qseecom.pdev);
 	if (rc) {
 		pr_err("error with firmware_request_nowarn, rc = %d\n", rc);
@@ -4732,7 +4747,11 @@ static int __qseecom_get_fw_size(const char *appname, uint32_t *fw_size,
 	fw_entry = NULL;
 	for (i = 0; i < num_images; i++) {
 		memset(fw_name, 0, sizeof(fw_name));
-		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d", appname, i);
+		if (snprintf(fw_name, sizeof(fw_name), "%s.b%02d", appname, i) >= sizeof(fw_name)) {
+			pr_err("Firmware name too long: %s.b%02d\n", appname, i);
+			ret = -EINVAL;
+			goto err;
+		}
 		ret = firmware_request_nowarn(&fw_entry, fw_name, qseecom.pdev);
 		if (ret)
 			goto err;
@@ -4768,7 +4787,12 @@ static int __qseecom_get_fw_data(const char *appname, u8 *img_data,
 	int num_images = 0;
 	unsigned char app_arch = 0;
 
-	snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname);
+	if (snprintf(fw_name, sizeof(fw_name), "%s.mdt", appname) >= sizeof(fw_name)) {
+		pr_err("appname: %s.mdt is too long, max %d char limit!\n", appname, MAX_APP_NAME_SIZE);
+		ret = -EINVAL;
+		goto err;
+	}
+
 	rc = firmware_request_nowarn(&fw_entry, fw_name,  qseecom.pdev);
 	if (rc) {
 		ret = -EIO;
@@ -4802,7 +4826,11 @@ static int __qseecom_get_fw_data(const char *appname, u8 *img_data,
 	release_firmware(fw_entry);
 	fw_entry = NULL;
 	for (i = 0; i < num_images; i++) {
-		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d", appname, i);
+		if (snprintf(fw_name, sizeof(fw_name), "%s.b%02d", appname, i) >= sizeof(fw_name)) {
+			pr_err("Firmware name too long: %s.b%02d\n", appname, i);
+			ret = -EINVAL;
+			goto err;
+		}
 		ret = firmware_request_nowarn(&fw_entry, fw_name, qseecom.pdev);
 		if (ret) {
 			pr_err("Failed to locate blob %s\n", fw_name);
@@ -9718,8 +9746,7 @@ static int qseecom_create_kthreads(void)
 		pr_err("fail to create kthread to unreg lsnr, rc = %x\n", rc);
 		return rc;
 	}
-	atomic_set(&qseecom.unregister_lsnr_kthread_state,
-					LSNR_UNREG_KT_SLEEP);
+	atomic_set(&qseecom.unregister_lsnr_kthread_work_pending, 0);
 
 	/*create a kthread to process pending ta unloading task */
 	qseecom.unload_app_kthread_task = kthread_run(
