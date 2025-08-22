@@ -13,12 +13,10 @@ ifeq ($(TARGET_KERNEL_DLKM_DISABLE), true)
   endif
 endif
 
-#enable QCEDEV_FE driver only on Automotive Lemans HQX LA GVM.
+#enable QCEDEV_FE driver only on Automotive Lemans HQX/HGY LA GVM.
 ifeq ($(ENABLE_HYP),true)
   ifeq ($(TARGET_BOARD_PLATFORM),gen4)
-    ifneq ($(TARGET_USES_GY), true)
-      ENABLE_QCEDEV_FE := true
-    endif #TARGET_USES_GY
+    ENABLE_QCEDEV_FE := true
   endif #TARGET_BOARD_PLATFORM
 endif #ENABLE_HYP
 

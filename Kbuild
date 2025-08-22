@@ -24,7 +24,7 @@ ifeq ($(CONFIG_ARCH_QTI_VM), y)
     endif
 endif
 
-ifeq ($(CONFIG_ARCH_NIOBE), y)
+ifneq (, $(filter y, $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH)))
 ccflags-y += -DCONFIG_QCOM_LEGACY_ADDRESS_BUS_SIZE=1
 endif
 
@@ -39,6 +39,7 @@ obj-$(CONFIG_QCOM_SMCINVOKE) += smcinvoke_dlkm.o
 ifneq ($(CONFIG_QCOM_SI_CORE), y)
     smcinvoke_dlkm-objs := smcinvoke/compat/smcinvoke_kernel.o
     smcinvoke_dlkm-objs += smcinvoke/compat/smcinvoke.o
+    smcinvoke_dlkm-objs += smcinvoke/compat/smci_kernel.o
 else
     smcinvoke_dlkm-objs := smcinvoke/si_core_xts/qseecom.o
     smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci_kernel.o
@@ -64,7 +65,7 @@ hdcp_qseecom_dlkm-objs := hdcp/hdcp_main.o hdcp/hdcp_smcinvoke.o hdcp/hdcp_qseec
 obj-$(CONFIG_HW_RANDOM_MSM_LEGACY) += qrng_dlkm.o
 qrng_dlkm-objs := qrng/msm_rng.o
 
-ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) $(CONFIG_ARCH_NIOBE)))
+ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH)))
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smmu_proxy.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smmu_proxy.h
 
@@ -77,12 +78,23 @@ ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) 
     endif
 endif
 
-#Enable QCE Dev Frontend if CONFIG_QTI_QUIN_GVM is set to y
-ifeq ($(CONFIG_QTI_QUIN_GVM), y)
+#Enable QCE Dev Frontend if CONFIG_QTI_QUIN_GVM (HQX) is set to y
+ifeq ($(CONFIG_QTI_QUIN_GVM),y)
+    enable_qcedev_fe := y
+
+#Enable QCE Dev Frontend if CONFIG_ARCH_QTI_VM is defined AND
+#CONFIG_ARCH_LEMANS OR CONFIG_ARCH_MONACO is set to y
+else ifeq ($(CONFIG_ARCH_QTI_VM),y)
+    ifneq (,$(filter y,$(CONFIG_ARCH_LEMANS) $(CONFIG_ARCH_MONACO_AUTO)))
+        enable_qcedev_fe := y
+    endif
+endif
+
+ifeq ($(enable_qcedev_fe),y)
 
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qcedev_fe.h
 
     obj-$(CONFIG_QCEDEV_FE) += qcedev_fe_dlkm.o
     qcedev_fe_dlkm-objs := qcedev_fe/qcedev_fe.o qcedev_fe/qcedev_smmu.o
-endif #CONFIG_QTI_QUIN_GVM
+endif
