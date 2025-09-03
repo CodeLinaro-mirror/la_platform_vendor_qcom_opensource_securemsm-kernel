@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #define pr_fmt(fmt) "smcinvoke: %s: " fmt, __func__
@@ -27,6 +27,7 @@
 # undef OBJECT_OP_METHOD_MASK
 
 #include "smci_impl.h"
+#include "smci_irq.h"
 
 #include <linux/firmware/qcom/si_core_xts.h>
 
@@ -1703,6 +1704,13 @@ static int smcinvoke_probe(struct platform_device *pdev)
 	if (ret)
 		pr_err("failed to get qseecom kernel func ops %d\n", ret);
 #endif
+	irq_kthread_create();
+
+	ret = smci_irq_setup(pdev);
+	if(ret) {
+		pr_err("failed to register irq with QTEE %d\n", ret);
+		irq_kthread_destroy();
+	}
 
 	return 0;
 
