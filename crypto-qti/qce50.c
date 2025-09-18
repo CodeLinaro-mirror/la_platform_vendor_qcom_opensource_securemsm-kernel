@@ -28,7 +28,7 @@
 #include <soc/qcom/socinfo.h>
 #include <linux/iommu.h>
 #include <linux/interrupt.h>
-
+#include <linux/version.h>
 #include "qcrypto.h"
 #include "qce.h"
 #include "qce50.h"
@@ -2974,8 +2974,11 @@ static void qce_multireq_timeout(struct timer_list *data)
 	cmpxchg(&pce_dev->owner, QCE_OWNER_TIMEOUT, QCE_OWNER_NONE);
 	pce_dev->mode = IN_INTERRUPT_MODE;
 	local_irq_restore(flags);
-
+	#if (KERNEL_VERSION(6, 15, 0) > LINUX_VERSION_CODE)
 	del_timer(&(pce_dev->timer));
+	#else
+	timer_delete(&(pce_dev->timer));
+	#endif
 	pce_dev->qce_stats.no_of_timeouts++;
 	pr_debug("pcedev %d mode switch to INTR\n", pce_dev->dev_no);
 }
@@ -6341,19 +6344,25 @@ static int qce_smmu_init(struct qce_device *pce_dev)
 		if (!dev->dma_parms)
 			return -ENOMEM;
 	}
-	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
-	dma_set_seg_boundary(dev, (unsigned long)DMA_BIT_MASK(64));
+	dma_set_max_seg_size(dev, (unsigned int)DMA_BIT_MASK(32));
+	dma_set_seg_boundary(dev, (unsigned long)(u64)DMA_BIT_MASK(64));
 	return 0;
 }
 
 #define TCSR_SOC_HW_VERSION	0x1FC8000
 #define REG_SIZE	4
-#define TCSR_SOC_HW_VERSION_MAJOR_MASK	GENMASK(15, 8)
+/*
+ * The hardware ECO that adjusts the descriptor FIFO size is not updated
+ * in the crypto registers. This change is required only for CANOE R1,
+ * so the SOC HW Version is checked for CANOE R1.
+ * If the SOC HW Version matches CANOE R1, software workaround patches are applied.
+ * TODO: Move this logic to dtsi since it is a target-specific check.
+ */
+#define CANOE_SOC_HW_VER	0xA01B0100
 
 static void qce_parse_soc_revision(struct qce_device *pce_dev)
 {
 	unsigned int soc_hw_version = 0;
-	unsigned int major = 0;
 	void __iomem *hw_version_reg = ioremap(TCSR_SOC_HW_VERSION, REG_SIZE);
 
 	if (!hw_version_reg) {
@@ -6362,9 +6371,15 @@ static void qce_parse_soc_revision(struct qce_device *pce_dev)
 		return;
 	}
 	soc_hw_version = readl(hw_version_reg);
-	major = FIELD_GET(TCSR_SOC_HW_VERSION_MAJOR_MASK, soc_hw_version);
 
-	if (major == 1)
+	/*
+	 * The hardware ECO for fixing descriptor FIFO sizes is
+	 * not indicated via crypto registers. For this reason, it is
+	 * required to manually check the full soc revision to differentiate
+	 * canoe v1 vs v2.
+	 */
+
+	if (soc_hw_version == CANOE_SOC_HW_VER)
 		pce_dev->fifo_eco_unavailable = true;
 	else
 		pce_dev->fifo_eco_unavailable = false;
