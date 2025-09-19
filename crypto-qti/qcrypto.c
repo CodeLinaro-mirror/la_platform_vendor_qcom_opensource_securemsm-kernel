@@ -666,8 +666,13 @@ static void qcrypto_ce_set_bus(struct crypto_engine *pengine,
 
 static void qcrypto_bw_reaper_timer_callback(struct timer_list *data)
 {
+#if (KERNEL_VERSION(6, 16, 0) > LINUX_VERSION_CODE)
 	struct crypto_engine *pengine = from_timer(pengine, data,
 		bw_reaper_timer);
+#else
+	struct crypto_engine *pengine = timer_container_of(pengine, data,
+		bw_reaper_timer);
+#endif
 
 	schedule_work(&pengine->bw_reaper_ws);
 }
