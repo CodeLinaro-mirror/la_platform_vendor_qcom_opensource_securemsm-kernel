@@ -14,6 +14,9 @@ def define_parrot():
             "qseecom_dlkm",
             "smmu_proxy_dlkm",
             "tmecom-intf_dlkm",
+            "seccam_test_driver",
+            "hdcp2p2_test",
+            "tornado_mod",
         ],
         extra_options = [
             "CONFIG_QCOM_SMCINVOKE",
