@@ -57,6 +57,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen4)
       ENABLE_QCRYPTO_DLKM := false
       ENABLE_HDCP_QSEECOM_DLKM := false
       ENABLE_QSEECOM_DLKM := false
+      ENABLE_QCEDEV_FE := true
     endif
   endif
 endif
@@ -82,6 +83,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen5)
     ENABLE_HDCP_QSEECOM_DLKM := false
     ENABLE_QSEECOM_DLKM := false
     ENABLE_SMCINVOKE_DLKM := true
+    ENABLE_QCEDEV_FE := true
   endif
 endif
 
@@ -114,6 +116,11 @@ ifeq ($(TARGET_BOARD_AUTO), true)
   ENABLE_SI_CORE_TEST := false
   ENABLE_SST_INVOKE_TEST := false
 endif #TARGET_BOARD_AUTO
+
+# Enable Hibernate kernel module
+ifneq ($(call is-board-platform-in-list, vienna64),true)
+  ENABLE_HIBERNATE_TZDATA_MGR := true
+endif
 
 LOCAL_PATH := $(call my-dir)
 
@@ -329,3 +336,15 @@ LOCAL_MODULE_DEBUG_ENABLE := true
 LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
 include $(DLKM_DIR)/Build_external_kernelmodule.mk
 endif #ENABLE_SI_CORE_TEST
+###################################################
+###################################################
+ifeq ($(ENABLE_HIBERNATE_TZDATA_MGR), true)
+include $(CLEAR_VARS)
+LOCAL_SRC_FILES           := $(SSG_SRC_FILES)
+LOCAL_MODULE              := hibernate_tzdata_mgr_dlkm.ko
+LOCAL_MODULE_KBUILD_NAME  := hibernate_tzdata_mgr_dlkm.ko
+LOCAL_MODULE_TAGS         := optional
+LOCAL_MODULE_DEBUG_ENABLE := true
+LOCAL_MODULE_PATH         := $(KERNEL_MODULES_OUT)
+include $(DLKM_DIR)/Build_external_kernelmodule.mk
+endif #ENABLE_HIBERNATE_TZDATA_MGR
