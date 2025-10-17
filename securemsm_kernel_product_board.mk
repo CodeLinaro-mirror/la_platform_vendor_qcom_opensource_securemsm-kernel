@@ -115,7 +115,7 @@ ifeq ($(TARGET_BOARD_AUTO), true)
 endif #TARGET_BOARD_AUTO
 
 # Enable Hibernate kernel module
-ifeq ($(filter $(TARGET_BOARD_PLATFORM), seraph vienna64),$(TARGET_BOARD_PLATFORM))
+ifeq ($(filter $(TARGET_BOARD_PLATFORM), seraph vienna),$(TARGET_BOARD_PLATFORM))
   ENABLE_HIBERNATE_TZDATA_MGR := true
 endif
 
