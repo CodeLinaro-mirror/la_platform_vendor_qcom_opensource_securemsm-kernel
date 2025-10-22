@@ -93,7 +93,8 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
             ],
             "//build/kernel/kleaf:socrepo_false": [],
         })
-    if target == "sun" or target == "canoe" or target == "vienna" or target == "qcs610":
+    qseecom_proxy_targets = ["sun", "canoe", "vienna", "qcs610", "monaco"]
+    if target in qseecom_proxy_targets:
         deps += select({
             "//build/kernel/kleaf:socrepo_true": [
                 "//soc-repo:{}/drivers/misc/qseecom_proxy".format(kernel_build_variant),
