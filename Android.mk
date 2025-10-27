@@ -57,6 +57,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen4)
       ENABLE_QCRYPTO_DLKM := false
       ENABLE_HDCP_QSEECOM_DLKM := false
       ENABLE_QSEECOM_DLKM := false
+      ENABLE_QCEDEV_FE := true
     endif
   endif
 endif
@@ -82,6 +83,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen5)
     ENABLE_HDCP_QSEECOM_DLKM := false
     ENABLE_QSEECOM_DLKM := false
     ENABLE_SMCINVOKE_DLKM := true
+    ENABLE_QCEDEV_FE := true
   endif
 endif
 
@@ -89,7 +91,11 @@ endif
 ifneq ($(TARGET_USES_QMAA), true)
     ENABLE_SST_INVOKE_TEST := true
     ENABLE_HDCP_TEST := true
-    ENABLE_SI_CORE_TEST := true
+    ifeq ($(CONFIG_SI_CORE_TEST), y)
+        ENABLE_SI_CORE_TEST := true
+    else
+        ENABLE_SI_CORE_TEST := false
+    endif
     ifneq ($(call is-board-platform-in-list, kalama64 blair kalama),true)
         ENABLE_SECCAM_TEST := true
     endif

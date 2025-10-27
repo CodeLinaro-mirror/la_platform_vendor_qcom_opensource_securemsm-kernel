@@ -2938,7 +2938,11 @@ static void _qce_req_complete(struct qce_device *pce_dev, unsigned int req_info)
 
 static void qce_multireq_timeout(struct timer_list *data)
 {
+#if (KERNEL_VERSION(6, 16, 0) > LINUX_VERSION_CODE)
 	struct qce_device *pce_dev = from_timer(pce_dev, data, timer);
+#else
+	struct qce_device *pce_dev = timer_container_of(pce_dev, data, timer);
+#endif
 	int ret = 0;
 	int last_seq;
 	unsigned long flags;
@@ -4454,7 +4458,7 @@ static int qce_core_irq_init(struct qce_device *pce_dev)
 		pr_err("Could not request irq: %d\n", ret);
 		return ret;
 	}
-	enable_irq(pce_dev->core_irq);
+
 	return ret;
 }
 
