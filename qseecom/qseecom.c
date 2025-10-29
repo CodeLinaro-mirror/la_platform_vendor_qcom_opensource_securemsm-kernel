@@ -114,6 +114,8 @@
 #define QSEECOM_STATE_READY             2
 #define QSEECOM_ICE_FDE_KEY_SIZE_MASK   2
 
+#define QSEE_ERROR_PRINT_APP_FAULTED    0xFFFFFFE9
+
 /*
  * default ce info unit to 0 for
  * services which
@@ -612,6 +614,10 @@ static int __qseecom_scm_call2_locked(uint32_t smc_id, struct qseecom_scm_desc *
 		}
 		pr_info_ratelimited("re-sending syscall with TZ busy");
 	} while (true);
+
+	if (desc->ret[0] == QSEE_ERROR_PRINT_APP_FAULTED)
+		return -EFAULT;
+
 	return ret;
 }
 
