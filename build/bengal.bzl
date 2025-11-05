@@ -13,7 +13,6 @@ def define_bengal():
             "qrng_dlkm",
             "qcrypto-msm_dlkm",
             "tmecom-intf_dlkm",
-            "seccam_test_driver",
             "hdcp2p2_test",
             "si_core_test",
             "tornado_mod",
