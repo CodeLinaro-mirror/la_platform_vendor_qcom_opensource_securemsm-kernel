@@ -56,6 +56,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen4)
       ENABLE_QCRYPTO_DLKM := false
       ENABLE_HDCP_QSEECOM_DLKM := false
       ENABLE_QSEECOM_DLKM := false
+      ENABLE_QCEDEV_FE := true
     endif
   endif
 endif
@@ -81,6 +82,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen5)
     ENABLE_HDCP_QSEECOM_DLKM := false
     ENABLE_QSEECOM_DLKM := false
     ENABLE_SMCINVOKE_DLKM := true
+    ENABLE_QCEDEV_FE := true
   endif
 endif
 
@@ -111,6 +113,11 @@ ifeq ($(TARGET_BOARD_AUTO), true)
   ENABLE_SI_CORE_TEST := false
   ENABLE_SST_INVOKE_TEST := false
 endif #TARGET_BOARD_AUTO
+
+# Enable Hibernate kernel module
+ifeq ($(filter $(TARGET_BOARD_PLATFORM), seraph vienna64),$(TARGET_BOARD_PLATFORM))
+  ENABLE_HIBERNATE_TZDATA_MGR := true
+endif
 
 ifeq ($(ENABLE_QCRYPTO_DLKM), true)
 PRODUCT_PACKAGES += qcedev-mod_dlkm.ko
@@ -165,3 +172,7 @@ endif #ENABLE_SI_CORE_TEST
 ifeq ($(ENABLE_SST_INVOKE_TEST), true)
 PRODUCT_PACKAGES_DEBUG += tornado_mod.ko
 endif #ENABLE_SST_INVOKE_TEST
+
+ifeq ($(ENABLE_HIBERNATE_TZDATA_MGR), true)
+PRODUCT_PACKAGES += hibernate_tzdata_mgr_dlkm.ko
+endif #ENABLE_HIBERNATE_TZDATA_MGR

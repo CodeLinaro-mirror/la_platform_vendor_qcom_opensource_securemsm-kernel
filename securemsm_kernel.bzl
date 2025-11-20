@@ -77,7 +77,6 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
             "//soc-repo:{}/drivers/firmware/qcom/qcom-scm".format(kernel_build_variant),
             "//soc-repo:{}/drivers/firmware/qcom/si_core/si_core_module".format(kernel_build_variant),
             "//soc-repo:{}/drivers/iommu/qcom_iommu_util".format(kernel_build_variant),
-            "//soc-repo:{}/drivers/firmware/qcom/si_core/mem_object".format(kernel_build_variant),
             "//soc-repo:{}/drivers/virt/gunyah/gh_msgq".format(kernel_build_variant),
             "//soc-repo:{}/drivers/dma-buf/heaps/qcom_dma_heaps".format(kernel_build_variant),
         ],
@@ -94,7 +93,7 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
             ],
             "//build/kernel/kleaf:socrepo_false": [],
         })
-    if target == "sun" or target == "canoe" or target == "vienna":
+    if target == "sun" or target == "canoe" or target == "vienna" or target == "qcs610":
         deps += select({
             "//build/kernel/kleaf:socrepo_true": [
                 "//soc-repo:{}/drivers/misc/qseecom_proxy".format(kernel_build_variant),
@@ -151,6 +150,8 @@ def define_consolidate_gki_modules(target, modules, extra_options = [], config_o
     define_target_variant_modules(target, "consolidate", modules, extra_options, config_option)
     define_target_variant_modules(target, "gki", modules, extra_options, config_option)
     define_target_variant_modules(target, "perf", modules, extra_options, config_option)
+    define_target_variant_modules(target, "debug-defconfig", modules, extra_options, config_option, vm_target = True)
+    define_target_variant_modules(target, "defconfig", modules, extra_options, config_option, vm_target = True)
 
 def define_vm_modules(target, modules, extra_options = [], config_option = None):
     define_target_variant_modules(target, "debug-defconfig", modules, extra_options, config_option, vm_target = True)
