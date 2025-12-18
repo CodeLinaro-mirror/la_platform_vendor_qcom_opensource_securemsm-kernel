@@ -72,6 +72,16 @@ ddk_headers(
 )
 
 ddk_headers(
+    name = "hibernate_tzdata_mgr_headers",
+    hdrs = [
+        "include/linux/hibernate_tzdata_mgr.h",
+    ],
+    includes = [
+        "include",
+    ],
+)
+
+ddk_headers(
     name = "qcedev_local_headers",
     hdrs = glob([
         "include/uapi/linux/*.h",
@@ -114,6 +124,9 @@ load(":build/lahaina.bzl", "define_lahaina")
 load(":build/vienna.bzl", "define_vienna")
 load(":build/qcs610.bzl", "define_qcs610")
 load(":build/autogvm.bzl", "define_autogvm")
+load(":build/bengal.bzl", "define_bengal")
+load(":build/alor-le.bzl", "define_alor_le")
+load(":build/malabar.bzl", "define_malabar")
 
 define_pineapple()
 define_blair()
@@ -130,3 +143,6 @@ define_lahaina()
 define_vienna()
 define_qcs610()
 define_autogvm()
+define_bengal()
+define_alor_le()
+define_malabar()
