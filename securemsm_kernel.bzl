@@ -77,7 +77,6 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
             "//soc-repo:{}/drivers/firmware/qcom/qcom-scm".format(kernel_build_variant),
             "//soc-repo:{}/drivers/firmware/qcom/si_core/si_core_module".format(kernel_build_variant),
             "//soc-repo:{}/drivers/iommu/qcom_iommu_util".format(kernel_build_variant),
-            "//soc-repo:{}/drivers/firmware/qcom/si_core/mem_object".format(kernel_build_variant),
             "//soc-repo:{}/drivers/virt/gunyah/gh_msgq".format(kernel_build_variant),
             "//soc-repo:{}/drivers/dma-buf/heaps/qcom_dma_heaps".format(kernel_build_variant),
         ],
@@ -87,14 +86,15 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
         "//build/kernel/kleaf:socrepo_true": "//soc-repo:{}_base_kernel".format(tv),
         "//build/kernel/kleaf:socrepo_false": "//msm-kernel:{}".format(tv),
     })
-    if not vm_target:
+    if not vm_target or target == "alor-le":
         deps += select({
             "//build/kernel/kleaf:socrepo_true": [
                 "//soc-repo:{}/drivers/soc/qcom/sps/sps_drv".format(kernel_build_variant),
             ],
             "//build/kernel/kleaf:socrepo_false": [],
         })
-    if target == "sun" or target == "canoe" or target == "vienna":
+    qseecom_proxy_targets = ["sun", "canoe", "vienna", "qcs610", "monaco", "alor-le", "malabar"]
+    if target in qseecom_proxy_targets:
         deps += select({
             "//build/kernel/kleaf:socrepo_true": [
                 "//soc-repo:{}/drivers/misc/qseecom_proxy".format(kernel_build_variant),
