@@ -4718,9 +4718,9 @@ static int __qseecom_get_fw_size(const char *appname, uint32_t *fw_size,
 		goto err;
 	}
 
-	rc = firmware_request_nowarn(&fw_entry, fw_name,  qseecom.pdev);
+	rc = request_firmware_direct(&fw_entry, fw_name,  qseecom.pdev);
 	if (rc) {
-		pr_err("error with firmware_request_nowarn, rc = %d\n", rc);
+		pr_err("error with request_firmware_direct, rc = %d\n", rc);
 		ret = -EIO;
 		goto err;
 	}
@@ -4752,7 +4752,7 @@ static int __qseecom_get_fw_size(const char *appname, uint32_t *fw_size,
 			ret = -EINVAL;
 			goto err;
 		}
-		ret = firmware_request_nowarn(&fw_entry, fw_name, qseecom.pdev);
+		ret = request_firmware_direct(&fw_entry, fw_name, qseecom.pdev);
 		if (ret)
 			goto err;
 		if (*fw_size > U32_MAX - fw_entry->size) {
@@ -4793,7 +4793,7 @@ static int __qseecom_get_fw_data(const char *appname, u8 *img_data,
 		goto err;
 	}
 
-	rc = firmware_request_nowarn(&fw_entry, fw_name,  qseecom.pdev);
+	rc = request_firmware_direct(&fw_entry, fw_name,  qseecom.pdev);
 	if (rc) {
 		ret = -EIO;
 		goto err;
@@ -4831,7 +4831,7 @@ static int __qseecom_get_fw_data(const char *appname, u8 *img_data,
 			ret = -EINVAL;
 			goto err;
 		}
-		ret = firmware_request_nowarn(&fw_entry, fw_name, qseecom.pdev);
+		ret = request_firmware_direct(&fw_entry, fw_name, qseecom.pdev);
 		if (ret) {
 			pr_err("Failed to locate blob %s\n", fw_name);
 			goto err;
