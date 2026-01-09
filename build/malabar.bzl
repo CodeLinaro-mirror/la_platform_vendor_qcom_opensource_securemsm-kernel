@@ -17,6 +17,7 @@ def define_malabar():
             "hdcp2p2_test",
             "si_core_test",
             "tornado_mod",
+	    "tmecom-intf_dlkm",
          ],
         extra_options = [
              "CONFIG_QCOM_SI_CORE_TEST",
