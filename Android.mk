@@ -57,6 +57,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen4)
       ENABLE_QCRYPTO_DLKM := false
       ENABLE_HDCP_QSEECOM_DLKM := false
       ENABLE_QSEECOM_DLKM := false
+      ENABLE_SMCINVOKE_DLKM := true
       ENABLE_QCEDEV_FE := true
     endif
   endif
@@ -118,7 +119,7 @@ ifeq ($(TARGET_BOARD_AUTO), true)
 endif #TARGET_BOARD_AUTO
 
 # Enable Hibernate kernel module
-ifneq ($(call is-board-platform-in-list, vienna64),true)
+ifeq ($(filter $(TARGET_BOARD_PLATFORM), seraph vienna),$(TARGET_BOARD_PLATFORM))
   ENABLE_HIBERNATE_TZDATA_MGR := true
 endif
 
