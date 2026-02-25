@@ -43,6 +43,7 @@ ifneq ($(CONFIG_QCOM_SI_CORE), y)
 else
     smcinvoke_dlkm-objs := smcinvoke/si_core_xts/qseecom.o
     smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci_kernel.o
+    smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci_irq.o
     smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci.o
 endif
 
