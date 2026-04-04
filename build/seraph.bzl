@@ -18,6 +18,7 @@ def define_seraph():
             "hdcp2p2_test",
             "si_core_test",
             "tornado_mod",
+            "hibernate_tzdata_mgr_dlkm",
          ],
          extra_options = [
              "CONFIG_QCOM_SI_CORE_TEST",
@@ -26,5 +27,6 @@ def define_seraph():
              "CONFIG_QCOM_SI_CORE",
              "CONFIG_MSM_TMECOM_QMP",
              "CONFIG_TZLOG_TIME_CONSOLIDATE",
+             "CONFIG_HIBERNATE_TZDATA_MGR",
          ],
      )
