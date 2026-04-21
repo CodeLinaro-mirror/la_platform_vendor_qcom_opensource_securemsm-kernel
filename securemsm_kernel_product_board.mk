@@ -87,6 +87,17 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen5)
   endif
 endif
 
+# prime_gvm runs on virtualized AUTO target; these two modules are not produced
+# in current kernel artifacts and cause missing-DLKM copy failures.
+ifeq ($(TARGET_BOARD_PLATFORM), prime)
+  ifeq ($(ENABLE_HYP), true)
+    ENABLE_TZLOG_DLKM := false
+    ENABLE_QCRYPTO_DLKM := false
+    ENABLE_HDCP_QSEECOM_DLKM := false
+    ENABLE_SMCINVOKE_DLKM := false
+  endif
+endif
+
 # TEST Drivers (si_core_test, seccam_driver, hdcp_test, tornado_mod)
 ifneq ($(TARGET_USES_QMAA), true)
     ENABLE_SST_INVOKE_TEST := true

@@ -81,6 +81,17 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen5)
   endif
 endif
 
+# prime_gvm runs on virtualized AUTO target; these two modules are not produced
+# in current kernel artifacts and cause missing-DLKM copy failures.
+ifeq ($(TARGET_BOARD_PLATFORM), prime)
+  ifeq ($(ENABLE_HYP), true)
+    ENABLE_TZLOG_DLKM := false
+    ENABLE_QCRYPTO_DLKM := false
+    ENABLE_HDCP_QSEECOM_DLKM := false
+    ENABLE_SMCINVOKE_DLKM := false
+  endif
+endif
+
 # Enable Hibernate kernel module
 ifeq ($(filter $(TARGET_BOARD_PLATFORM), vienna),$(TARGET_BOARD_PLATFORM))
   ENABLE_HIBERNATE_TZDATA_MGR_DLKM := true
