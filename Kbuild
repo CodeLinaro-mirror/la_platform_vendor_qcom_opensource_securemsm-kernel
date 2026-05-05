@@ -24,7 +24,7 @@ ifeq ($(CONFIG_ARCH_QTI_VM), y)
     endif
 endif
 
-ifneq (, $(filter y, $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH)))
+ifneq (, $(filter y, $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH) $(CONFIG_ARCH_NEO)))
 ccflags-y += -DCONFIG_QCOM_LEGACY_ADDRESS_BUS_SIZE=1
 endif
 
@@ -43,6 +43,7 @@ ifneq ($(CONFIG_QCOM_SI_CORE), y)
 else
     smcinvoke_dlkm-objs := smcinvoke/si_core_xts/qseecom.o
     smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci_kernel.o
+    smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci_irq.o
     smcinvoke_dlkm-objs += smcinvoke/si_core_xts/smci.o
 endif
 
@@ -65,7 +66,7 @@ hdcp_qseecom_dlkm-objs := hdcp/hdcp_main.o hdcp/hdcp_smcinvoke.o hdcp/hdcp_qseec
 obj-$(CONFIG_HW_RANDOM_MSM_LEGACY) += qrng_dlkm.o
 qrng_dlkm-objs := qrng/msm_rng.o
 
-ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH)))
+ifneq (, $(filter y, $(ARCH_QTI_VM) $(CONFIG_ARCH_PINEAPPLE) $(CONFIG_ARCH_SUN) $(CONFIG_ARCH_NIOBE) $(CONFIG_ARCH_SERAPH) $(CONFIG_ARCH_NEO)))
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smmu_proxy.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_smmu_proxy.h
 
