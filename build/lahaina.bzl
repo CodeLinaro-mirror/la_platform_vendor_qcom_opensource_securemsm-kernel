@@ -16,13 +16,10 @@ def define_lahaina():
             "tmecom-intf_dlkm",
             "seccam_test_driver",
             "hdcp2p2_test",
-            "si_core_test",
             "tornado_mod",
          ],
          extra_options = [
-             "CONFIG_QCOM_SI_CORE_TEST",
              "CONFIG_QCOM_SMCINVOKE",
-             "CONFIG_QSEECOM_COMPAT",
-             "CONFIG_QCOM_SI_CORE",
+             "CONFIG_QSEECOM",
          ],
      )

@@ -107,6 +107,11 @@ ifeq ($(ENABLE_HDCP_DP), true)
     ENABLE_HDCP_TEST := true
 endif
 
+# Disabling si_core_test for lahaina (not supported)
+ifeq ($(TARGET_BOARD_PLATFORM), lahaina)
+  ENABLE_SI_CORE_TEST := false
+endif #lahaina
+
 # Disabling test drivers for GY targets
 ifeq ($(TARGET_BOARD_AUTO), true)
   ENABLE_HDCP_TEST := false
