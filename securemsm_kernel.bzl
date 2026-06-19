@@ -93,11 +93,7 @@ def define_target_variant_modules(target, variant, modules, extra_options = [], 
             ],
             "//build/kernel/kleaf:socrepo_false": [],
         })
-<<<<<<< HEAD   (a6b2af Merge 512c3264d2bbf7e15a3cb09110638592c9b0b05b on remote bra)
-    qseecom_proxy_targets = ["sun", "canoe", "vienna", "qcs610", "monaco", "alor-le", "malabar", "seraph", "vienna-le", "bengal", "shikra"]
-=======
     qseecom_proxy_targets = ["sun", "canoe", "vienna", "qcs610", "monaco", "alor-le", "malabar", "seraph", "vienna-le", "bengal", "shikra", "lahaina", "bengal-le"]
->>>>>>> CHANGE (cf122c securemsm-kernel: Add support for bengal-le target)
     if target in qseecom_proxy_targets:
         deps += select({
             "//build/kernel/kleaf:socrepo_true": [
