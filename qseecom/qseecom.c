@@ -4560,11 +4560,37 @@ static int __qseecom_send_modfd_cmd(struct qseecom_dev_handle *data,
 		}
 	}
 
-	/*Back up original address */
+	/*Back up original request buffer address */
 	origin_req_buf_kvirt = (void *)__qseecom_uvirt_to_kvirt(data,
 				(uintptr_t)req.cmd_req_buf);
+	if (!origin_req_buf_kvirt) {
+		return -EINVAL;
+	}
+	/* VALIDATION: Check if converted address is within kernel buffer range */
+	if ((uintptr_t)origin_req_buf_kvirt < (uintptr_t)data->client.sb_virt || req.cmd_req_len > data->client.sb_length ||
+	   (uintptr_t)origin_req_buf_kvirt > (uintptr_t)data->client.sb_virt + data->client.sb_length - req.cmd_req_len) {
+		pr_err("qseecom: Converted cmd_req_buf is invalid (0x%llx not in 0x%llx-0x%llx)\n",
+			(u64)origin_req_buf_kvirt,
+			(u64)data->client.sb_virt,
+			(u64)(data->client.sb_virt + data->client.sb_length));
+		return -EINVAL;
+	}
+
+	/*Back up original response buffer address */
 	origin_rsp_buf_kvirt = (void *)__qseecom_uvirt_to_kvirt(data,
 				(uintptr_t)req.resp_buf);
+	if (!origin_rsp_buf_kvirt) {
+		return -EINVAL;
+	}
+	/* VALIDATION: Check if converted address is within kernel buffer range */
+	if ((uintptr_t)origin_rsp_buf_kvirt < (uintptr_t)data->client.sb_virt ||
+	    (uintptr_t)origin_rsp_buf_kvirt > (uintptr_t)data->client.sb_virt + data->client.sb_length - req.resp_len) {
+		pr_err("qseecom: Converted resp_buf is invalid (0x%llx not in 0x%llx-0x%llx)\n",
+			(u64)origin_rsp_buf_kvirt,
+			(u64)data->client.sb_virt,
+			(u64)(data->client.sb_virt + data->client.sb_length));
+		return -EINVAL;
+	}
 
 	/* Allocate kernel buffer for request and response*/
 	ret = __qseecom_alloc_coherent_buf(req.cmd_req_len + req.resp_len,
