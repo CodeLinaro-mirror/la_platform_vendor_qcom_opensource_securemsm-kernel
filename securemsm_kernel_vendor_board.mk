@@ -81,7 +81,7 @@ ifeq ($(TARGET_BOARD_PLATFORM), gen5)
   endif
 endif
 
-# prime_gvm runs on virtualized AUTO target; these two modules are not produced
+# prime_gvm runs on virtualized AUTO target; these modules are not produced
 # in current kernel artifacts and cause missing-DLKM copy failures.
 ifeq ($(TARGET_BOARD_PLATFORM), prime)
   ifeq ($(ENABLE_HYP), true)
@@ -89,6 +89,12 @@ ifeq ($(TARGET_BOARD_PLATFORM), prime)
     ENABLE_QCRYPTO_DLKM := false
     ENABLE_HDCP_QSEECOM_DLKM := false
     ENABLE_SMCINVOKE_DLKM := false
+    # prime_gvm now builds smcinvoke_dlkm via the autoprimegvm kernel target,
+    # so package it for this platform specifically. Other prime derivatives
+    # keep the default (disabled) behavior above.
+    ifeq ($(TARGET_BOARD_SUFFIX), _gvm)
+      ENABLE_SMCINVOKE_DLKM := true
+    endif
   endif
 endif
 
