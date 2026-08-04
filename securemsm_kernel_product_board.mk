@@ -95,6 +95,17 @@ ifeq ($(TARGET_BOARD_PLATFORM), prime)
     ENABLE_QCRYPTO_DLKM := false
     ENABLE_HDCP_QSEECOM_DLKM := false
     ENABLE_SMCINVOKE_DLKM := false
+    ifeq ($(TARGET_BOARD_SUFFIX), _gvm)
+      # prime_gvm builds smcinvoke_dlkm via the autoprimegvm kernel target.
+      ENABLE_SMCINVOKE_DLKM := true
+      # qseecom_dlkm and smcinvoke_dlkm both export qseecom_start_app,
+      # qseecom_send_command, qseecom_shutdown_app and
+      # qseecom_process_listener_from_smcinvoke, so whichever loads second
+      # fails on duplicate symbols. This file derives ENABLE_QSEECOM_DLKM from
+      # TARGET_BOARD_AUTO independently of the board makefile, so it has to be
+      # cleared here too or qseecom_dlkm.ko still lands in PRODUCT_PACKAGES.
+      ENABLE_QSEECOM_DLKM := false
+    endif
   endif
 endif
 

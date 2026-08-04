@@ -5,7 +5,6 @@ def define_autoprimegvm():
         target = "autoprimegvm",
         modules = [
             "smcinvoke_dlkm",
-            "qseecom_dlkm",
             "qcedev_fe_dlkm",
             "qrng_dlkm",
         ],
@@ -14,7 +13,6 @@ def define_autoprimegvm():
            "CONFIG_QCOM_SMCINVOKE",
            "CONFIG_QSEECOM_COMPAT",
            "CONFIG_QCOM_SI_CORE",
-           "CONFIG_QSEECOM",
            "CONFIG_QCEDEV_FE",
         ],
     )

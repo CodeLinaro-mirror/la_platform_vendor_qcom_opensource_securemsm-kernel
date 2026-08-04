@@ -94,6 +94,13 @@ ifeq ($(TARGET_BOARD_PLATFORM), prime)
     # keep the default (disabled) behavior above.
     ifeq ($(TARGET_BOARD_SUFFIX), _gvm)
       ENABLE_SMCINVOKE_DLKM := true
+      # qseecom_dlkm and smcinvoke_dlkm both export qseecom_start_app,
+      # qseecom_send_command, qseecom_shutdown_app and
+      # qseecom_process_listener_from_smcinvoke, so whichever loads second
+      # fails on duplicate symbols. smcinvoke is the one this target needs
+      # (QSEECom is reached through the compat path built into it), so drop
+      # qseecom_dlkm. Overrides the TARGET_BOARD_AUTO-driven enable above.
+      ENABLE_QSEECOM_DLKM := false
     endif
   endif
 endif
