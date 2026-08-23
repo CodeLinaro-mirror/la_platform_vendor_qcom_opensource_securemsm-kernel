@@ -213,7 +213,7 @@ register_securemsm_module(
     path = QCEDEV_FE_PATH,
     srcs = [
                 "qcedev_fe.c",
-                "qcedev_smmu.c"],
+                "qcedev_fe_virt.c"],
     deps = [":qcedev_fe_local_headers"],
 )
 
@@ -227,8 +227,16 @@ register_securemsm_module(
                     "si_core_test_cbo.c",
                     "si_core_test_cbo_impl.c",
                     "si_core_test_smo.c",
-                    "si_core_test_smo_impl.c"
+                    "si_core_test_smo_impl.c",
     ],
+    config_srcs = {
+        "CONFIG_QSEECOM_COMPAT": {
+            True: [
+                "si_core_test_trf.c",
+            ]
+        }
+    },
+    deps = ["%b_smcinvoke_dlkm"],
 )
 
 register_securemsm_module(
