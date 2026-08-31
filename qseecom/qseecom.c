@@ -559,6 +559,10 @@ static int __qseecom_scm_call2_locked(uint32_t smc_id, struct qseecom_scm_desc *
 
 	do {
 		ret = qcom_scm_qseecom_call(smc_id, desc, false);
+		if (desc && desc->ret[0] != 0 && (retry_count % 10 == 0)) {
+			pr_err("SCM call attempt %d: ret=%d, desc->ret[0]=%d\n",
+				retry_count, ret, desc->ret[0]);
+		}
 		if ((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) {
 			mutex_unlock(&app_access_lock);
 			msleep(QSEECOM_SCM_EBUSY_WAIT_MS);
@@ -568,6 +572,15 @@ static int __qseecom_scm_call2_locked(uint32_t smc_id, struct qseecom_scm_desc *
 			pr_warn("secure world has been busy for 1 second!\n");
 	} while (((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) &&
 			(retry_count++ < QSEECOM_SCM_EBUSY_MAX_RETRY));
+
+	/* If all retries are exhausted while TZ kept returning APP_BUSY, return -EBUSY */
+	if (((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) &&
+		(retry_count >= QSEECOM_SCM_EBUSY_MAX_RETRY)) {
+		pr_err("Secure world app busy: Retries exhausted after %d attempts (>1 second)\n",
+			QSEECOM_SCM_EBUSY_MAX_RETRY);
+		ret = -EBUSY;
+	}
+
 	return ret;
 }
 
