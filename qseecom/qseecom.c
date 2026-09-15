@@ -4324,7 +4324,8 @@ static int __qseecom_allocate_sg_list_buffer(struct qseecom_dev_handle *data,
 static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 			struct qseecom_dev_handle *data)
 {
-	char *field;
+	char *field = NULL;
+	char *buffer = NULL;
 	int ret = 0;
 	int i = 0;
 	uint32_t len = 0;
@@ -4332,8 +4333,8 @@ static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 	struct qseecom_send_modfd_cmd_req *req = NULL;
 	struct qseecom_send_modfd_listener_resp *lstnr_resp = NULL;
 	struct qseecom_registered_listener_list *this_lstnr = NULL;
-	uint32_t offset;
-	struct sg_table *sg_ptr;
+	uint32_t offset = 0;
+	struct sg_table *sg_ptr = NULL;
 	int ion_fd = -1;
 	struct dma_buf *dmabuf = NULL;
 	struct dma_buf_attachment *attach = NULL;
@@ -4361,13 +4362,13 @@ static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 		if ((data->type != QSEECOM_LISTENER_SERVICE) &&
 						(req->ifd_data[i].fd > 0)) {
 			ion_fd = req->ifd_data[i].fd;
-			field = (char *) req->cmd_req_buf +
-				req->ifd_data[i].cmd_buf_offset;
+			buffer = (char *)req->cmd_req_buf;
+			offset = req->ifd_data[i].cmd_buf_offset;
 		} else if ((data->type == QSEECOM_LISTENER_SERVICE) &&
 				(lstnr_resp->ifd_data[i].fd > 0)) {
 			ion_fd = lstnr_resp->ifd_data[i].fd;
-			field = lstnr_resp->resp_buf_ptr +
-				lstnr_resp->ifd_data[i].cmd_buf_offset;
+			buffer = lstnr_resp->resp_buf_ptr;
+			offset = lstnr_resp->ifd_data[i].cmd_buf_offset;
 		} else {
 			continue;
 		}
@@ -4377,14 +4378,29 @@ static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 			pr_err("IOn client could not retrieve sg table\n");
 			goto err;
 		}
-		if (sg_ptr->nents == 0) {
-			pr_err("Num of scattered entries is 0\n");
+		if (sg_ptr == NULL || sg_ptr->nents == 0) {
+			pr_err("Bad SG tbl: ptr=%p, nents=%u, fd=%d, idx=%d\n",
+				sg_ptr, sg_ptr ? sg_ptr->nents : 0, ion_fd, i);
+			ret = -EINVAL;
 			goto err;
 		}
 		if (sg_ptr->nents > QSEECOM_MAX_SG_ENTRY) {
 			pr_warn("Num of scattered entries\n");
 			pr_warn(" (%d) is greater than %d\n",
 				sg_ptr->nents, QSEECOM_MAX_SG_ENTRY);
+			/*
+			 * __qseecom_allocate_sg_list_buffer() writes
+			 * QSEECOM_SG_LIST_BUF_HDR_SZ_64BIT bytes at field.
+			 * Validate the complete write range before using it.
+			 */
+			if (__boundary_checks_offset(req, lstnr_resp, data,
+			    i, QSEECOM_SG_LIST_BUF_HDR_SZ_64BIT)) {
+				pr_err("Invalid SG list buffer offset: %u\n",
+				       offset);
+				ret = -EINVAL;
+				goto err;
+			}
+
 			if (cleanup) {
 				if (data->client.sec_buf_fd[i].is_sec_buf_fd &&
 					data->client.sec_buf_fd[i].vbase)
@@ -4395,6 +4411,8 @@ static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 				memset(&data->client.sec_buf_fd[i], 0,
 					sizeof(struct qseecom_sec_buf_fd_info));
 			} else {
+				field = buffer + offset;
+
 				ret = __qseecom_allocate_sg_list_buffer(data,
 						field, i, sg_ptr);
 				if (ret) {
@@ -4409,22 +4427,47 @@ static int __qseecom_update_cmd_buf_64(void *msg, bool cleanup,
 		sg = sg_ptr->sgl;
 		if (sg_ptr->nents == 1) {
 			uint64_t *update_64bit;
+			size_t write_len = sizeof(*update_64bit);
 
-			if (__boundary_checks_offset(req, lstnr_resp, data, i, sizeof(uint64_t)))
+			/*
+			 * Validate the complete 64-bit address write before
+			 * calculating or dereferencing field.
+			 */
+			if (__boundary_checks_offset(req, lstnr_resp, data,
+					       i, write_len)) {
+				pr_err("64b range: off=%u, len=%zu, idx=%d\n",
+					offset, write_len, i);
+				ret = -EINVAL;
 				goto err;
+			}
 
-				/* 64bit app uses 64bit address */
+			field = buffer + offset;
+
+			/* 64bit app uses 64bit address */
 			update_64bit = (uint64_t *) field;
 			*update_64bit = cleanup ? 0 :
 					(uint64_t)sg_dma_address(sg_ptr->sgl);
 			len += (uint32_t)sg->length;
 		} else {
 			struct qseecom_sg_entry_64bit *update_64bit;
+			size_t sg_entries_len;
 			int j = 0;
 
+			sg_entries_len = (size_t)SG_ENTRY_SZ_64BIT * sg_ptr->nents;
+			/*
+			 * Validate the complete SG-entry array before
+			 * calculating or dereferencing field.
+			 */
 			if (__boundary_checks_offset(req, lstnr_resp, data, i,
-				(SG_ENTRY_SZ_64BIT * sg_ptr->nents)))
+				sg_entries_len)) {
+				pr_err("SG range: off=%u,len=%zu,nents=%u,idx=%d\n",
+					offset, sg_entries_len, sg_ptr->nents, i);
+				ret = -EINVAL;
 				goto err;
+			}
+
+			field = buffer + offset;
+
 			/* 64bit app uses 64bit address */
 			update_64bit = (struct qseecom_sg_entry_64bit *)field;
 			for (j = 0; j < sg_ptr->nents; j++) {
@@ -4496,7 +4539,7 @@ err:
 		qseecom_dmabuf_unmap(sg_ptr, attach, dmabuf);
 		MAKE_NULL(sg_ptr, attach, dmabuf);
 	}
-	return -ENOMEM;
+	return ret ? ret : -ENOMEM;
 }
 
 static int __qseecom_send_modfd_cmd(struct qseecom_dev_handle *data,
