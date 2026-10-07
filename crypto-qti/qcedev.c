@@ -824,10 +824,9 @@ static int submit_req(struct qcedev_async_req *qcedev_areq,
 			if ((req_wait == 0) || (req_wait == -ERESTARTSYS)) {
 				pr_err("%s: request timed out, req_wait = %d\n",
 						__func__, req_wait);
-				list_del(&qcedev_areq->list);
-				podev->active_command = NULL;
+				list_del_init(&qcedev_areq->list);
 				spin_unlock_irqrestore(&podev->lock, flags);
-				return qcedev_areq->err;
+				return req_wait == 0 ? -ETIMEDOUT : req_wait;
 			}
 		}
 	} while (qcedev_areq->state != QCEDEV_REQ_SUBMITTED);
@@ -2742,18 +2741,25 @@ static int qcedev_probe(struct platform_device *pdev)
 static int qcedev_remove(struct platform_device *pdev)
 {
 	struct qcedev_control *podev;
+	int ret = 0;
 
 	podev = platform_get_drvdata(pdev);
 	if (!podev)
 		return 0;
 
 	qcedev_ce_high_bw_req(podev, true);
-	if (podev->qce)
+	if (podev->qce) {
 		qce_close(podev->qce);
-	qcedev_ce_high_bw_req(podev, false);
+		podev->qce = NULL; /* prevent use-after-free */
+	}
 
-	if (podev->icc_path)
+	/* qce_close() already tore down BAM/SPS and disabled clocks. */
+	if (podev->icc_path) {
+		ret = icc_set_bw(podev->icc_path, 0, 0);
+		if (ret)
+			pr_err("%s: icc_set_bw failed, ret = %d", __func__, ret);
 		icc_put(podev->icc_path);
+	}
 	tasklet_kill(&podev->done_tasklet);
 
 	cdev_del(&podev->cdev);
