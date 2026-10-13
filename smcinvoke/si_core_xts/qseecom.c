@@ -565,6 +565,22 @@ char *firmware_request_from_smcinvoke(const char *appname, size_t *fw_size, stru
 	struct elf32_hdr *ehdr = NULL;
 	struct elf64_hdr *ehdr64 = NULL;
 
+	snprintf(fw_name, sizeof(fw_name), "%s.mbn", appname);
+	rc = firmware_request_nowarn(&fw_entry, fw_name, smci_dev);
+	if (!rc) {
+		*fw_size = fw_entry->size;
+		rc = qtee_shmbridge_allocate_shm((*fw_size), shm);
+		if (rc) {
+			pr_err("smbridge alloc failed for size: %zu\n", *fw_size);
+			release_firmware(fw_entry);
+			return NULL;
+		}
+		img_data_ptr = shm->vaddr;
+		memcpy(img_data_ptr, fw_entry->data, fw_entry->size);
+		release_firmware(fw_entry);
+		fw_entry = NULL;
+		return img_data_ptr;
+	}
 
 	/* load b00*/
 	snprintf(fw_name, sizeof(fw_name), "%s.b00", appname);
@@ -619,8 +635,39 @@ char *firmware_request_from_smcinvoke(const char *appname, size_t *fw_size, stru
 		goto release_fw_entry00;
 	}
 
-	/*Total size of image will be the offset of last image + the size of last split image*/
-	*fw_size = fw_entrylast->size + offset[num_images-1];
+
+	/*Find the total image size*/
+	*fw_size = fw_entry00->size;
+	for (phi = 1; phi < num_images-1; phi++) {
+		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d", appname, phi);
+		rc = firmware_request_nowarn(&fw_entry, fw_name, smci_dev);
+		if (rc) {
+			pr_err("Failed to locate blob %s\n", fw_name);
+			goto release_fw_entrylast;
+		}
+
+		if (*fw_size > U32_MAX - fw_entry->size) {
+			release_firmware(fw_entry);
+			fw_entry = NULL;
+			goto release_fw_entrylast;
+		}
+
+		if ((*fw_size) < (offset[phi] + fw_entry->size))
+			*fw_size = offset[phi] + fw_entry->size;
+		release_firmware(fw_entry);
+		fw_entry = NULL;
+	}
+
+	if ((*fw_size) > U32_MAX - fw_entrylast->size)
+		goto release_fw_entrylast;
+
+
+	if (offset[phi] > U32_MAX - fw_entrylast->size)
+		goto release_fw_entrylast;
+
+
+	if ((*fw_size) < (offset[phi] + fw_entrylast->size))
+		*fw_size = offset[phi] + fw_entrylast->size;
 
 	/*Allocate memory for the buffer that will hold the split image*/
 	rc = qtee_shmbridge_allocate_shm((*fw_size), shm);
