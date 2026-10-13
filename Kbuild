@@ -15,7 +15,7 @@ ifneq ($(CONFIG_ARCH_QTI_VM), y)
 endif
 
 #Enable Qseecom if CONFIG_ARCH_KHAJE OR CONFIG_ARCH_KHAJE or CONFIG_QTI_QUIN_GVM is set to y
-ifneq (, $(filter y, $(CONFIG_QTI_QUIN_GVM) $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_SA6155) $(CONFIG_ARCH_MONACO) $(CONFIG_ARCH_SM6150)))
+ifneq (, $(filter y, $(CONFIG_QTI_QUIN_GVM) $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_SA6155) $(CONFIG_ARCH_MONACO) $(CONFIG_ARCH_SM6150) $(CONFIG_ARCH_WAIPIO)))
     include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom.conf
     LINUXINCLUDE += -include $(SSG_MODULE_ROOT)/config/sec-kernel_defconfig_qseecom.h
 else
@@ -44,7 +44,6 @@ ifneq ($(filter y m,$(CONFIG_QCOM_SI_CORE)),)
 else
     smcinvoke_dlkm-objs := smcinvoke/compat/smcinvoke_kernel.o
     smcinvoke_dlkm-objs += smcinvoke/compat/smcinvoke.o
-    smcinvoke_dlkm-objs += smcinvoke/compat/smci_kernel.o
 endif
 
 obj-$(CONFIG_QTI_TZ_LOG) += tz_log_dlkm.o
@@ -110,12 +109,14 @@ ifneq ($(CONFIG_DISABLE_TEST_MODULES), y)
     obj-m += tornado_mod.o
     tornado_mod-objs := securemsm_tests/tornado_mod/tornado_mod.o
 
+    obj-m += seccam_test_driver.o
+    seccam_test_driver-objs := securemsm_tests/seccam_test_driver/seccam_test_driver.o
+endif
+
+ifeq ($(ENABLE_HDCP_TEST), true)
     KBUILD_CPPFLAGS += -DCONFIG_HDCP_QSEECOM
     obj-m += hdcp2p2_test.o
     hdcp2p2_test-objs := securemsm_tests/hdcp2p2_test/hdcp2p2_test.o
-
-    obj-m += seccam_test_driver.o
-    seccam_test_driver-objs := securemsm_tests/seccam_test_driver/seccam_test_driver.o
 endif
 
 ifneq ($(CONFIG_ARCH_QTI_VM), y)
