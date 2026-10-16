@@ -5558,6 +5558,7 @@ static int __qseecom_send_modfd_resp(struct qseecom_dev_handle *data,
 {
 	struct qseecom_send_modfd_listener_resp resp;
 	struct qseecom_registered_listener_list *this_lstnr = NULL;
+	int ret = 0;
 
 	if (copy_from_user(&resp, argp, sizeof(resp))) {
 		pr_err("copy_from_user failed\n");
