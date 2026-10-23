@@ -652,8 +652,6 @@ char *firmware_request_from_smcinvoke(const char *appname, size_t *fw_size, stru
 	if ((*fw_size) < (offset[phi] + fw_entrylast->size))
 		*fw_size = offset[phi] + fw_entrylast->size;
 
-
-
 	/*Allocate memory for the buffer that will hold the split image*/
 	rc = qtee_shmbridge_allocate_shm((*fw_size), shm);
 	if (rc) {
